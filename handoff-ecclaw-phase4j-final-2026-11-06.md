@@ -147,7 +147,7 @@
 
 | 提交 | 内容 |
 |---|---|
-| `__FEAT_COMMIT__` | `feat(document-preview): add DOCX structure fidelity`（6 files） |
+| `2065ecb` | `feat(document-preview): add DOCX structure fidelity`（6 files, +849/−17） |
 | `__DOC_COMMIT__` | `docs: record phase 4j commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
