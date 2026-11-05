@@ -166,6 +166,12 @@ Tools stay at 27.
 
 > commit hash 见本节下方「提交 hash」（提交后回填，用 `docs:` 小提交补记，不 amend）。
 
+**提交 hash**：
+
+| hash | 说明 |
+|---|---|
+| `d896d85` | `feat(document-preview): render XLSX scientific notation and fractions`（本轮 5 个文件，+567 / −26） |
+
 ---
 
 ## 10. 收尾清单（**本会话已全部完成**）
