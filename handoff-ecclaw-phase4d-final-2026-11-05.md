@@ -70,7 +70,7 @@
   —— 科学两位/负数/小数/零/一位尾数/括号负段/内置 11/内置 48、
   分数混合/一半/四分之三/三分之一/两位槽位/纯分数/纯分数带整数/固定分母/整数/负数/负段、
   字面量 E 不误判/字面量斜杠回退/分子放不下回退/不报错。
-- **phase4d e2e：31/31**（工具面 3 · 抽取 23 · 界面 4 · 不报错 1），产物 `run61-phase4d.log`
+- **phase4d e2e：31/31**（工具面 3 · 抽取 23 · 界面 4 · 不报错 1），产物 `run62-phase4d.log`
 - **全量回归 run62：十六套 503/503 全绿**（FAIL 全 0），摘要 `C:\Temp\ecclaw-verify\run62-summary.txt`：
   phase4d 31 · phase4c 26 · phase4b 18 · phase4a 20 · **phase3z 37** · phase3y 31 · phase3x 41 ·
   phase3w 27 · phase3v 29 · phase3u 24 · phase3t 16 · phase3r 31 · phase3p 45 · phase3o 44 ·
