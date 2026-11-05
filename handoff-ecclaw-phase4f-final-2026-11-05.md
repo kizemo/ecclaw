@@ -142,7 +142,7 @@ node C:/Temp/ecclaw-verify/rerun-and-regress15.cjs
 
 | 提交 | 内容 |
 |---|---|
-| （待填） | `feat(document-preview): add PDF outline navigation and page-range extraction` |
+| `9db8c51` | `feat(document-preview): add PDF outline navigation and page-range extraction` —— 11 files changed, 449 insertions(+), 12 deletions(-) |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
 
@@ -176,4 +176,4 @@ node C:/Temp/ecclaw-verify/rerun-and-regress15.cjs
 7. ✅ 全量回归 run64 十八套 **550/550**（摘要 `run64-summary.txt`；未跑真站 phase3s/3q）
 8. ✅ README §5.35 + 能力清单；task.md 第三十一阶段表 + 顶部状态段；项目记忆 `ecclaw_phase4f_pdf_outline.md` + `MEMORY.md` 索引
 9. ✅ `prompt-ecclaw-phase4f-next.md`（<30 行，只做接力指针）
-10. ⬜ **git commit** —— 待执行；hash 回填 §9 用 `docs:` 小提交补记（**不 amend**）
+10. ✅ **git commit 已执行** —— `9db8c51`（11 files, +449/−12），hash 已回填 §9
