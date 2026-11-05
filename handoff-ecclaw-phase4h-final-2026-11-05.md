@@ -185,7 +185,7 @@ node C:/Temp/ecclaw-verify/rerun-and-regress18.cjs
 
 | 提交 | 内容 |
 |---|---|
-| `__FEAT_COMMIT__` | `feat(document-preview): add XLSX unit, engineering and accounting formats` —— 本次回填 |
+| `29d4b88` | `feat(document-preview): add XLSX unit, engineering and accounting formats`（6 files, +697/−41） |
 | `__DOC_COMMIT__` | `docs: record phase 4h commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
@@ -213,7 +213,7 @@ node C:/Temp/ecclaw-verify/rerun-and-regress18.cjs
 6. ✅ 全量回归 run66 十九套 **628/628**（摘要 `run66-summary.txt`；未跑真站 phase3s/3q）
 7. ✅ README §5.37 + §5.33 + 能力清单；task.md 第三十三阶段表 + 顶部状态段；项目记忆 `ecclaw_phase4h_xlsx_formats.md` + `MEMORY.md` 索引
 8. ✅ `prompt-ecclaw-phase4h-next.md`（<30 行，只做接力指针）
-9. ⬜ **git commit** —— `__FEAT_COMMIT__`（feat）+ `__DOC_COMMIT__`（docs 回填 hash，**不 amend**）
+9. ✅ **git commit** —— `29d4b88`（feat）+ `__DOC_COMMIT__`（docs 回填 hash，**不 amend**）
 
 ---
 
