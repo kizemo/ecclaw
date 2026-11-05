@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import {
   api,
   type AllowRule,
@@ -37,6 +37,15 @@ const APPROVAL_STATUS_TEXT: Record<WriteApprovalStatus, string> = {
 
 /** 卡片最多保留最近几张（避免历史票据堆满屏幕） */
 const APPROVAL_CARD_LIMIT = 8
+
+/** PDF 预览：缩略图窗口一次显示多少页 */
+const THUMB_WINDOW = 12
+/** PDF 预览：缩略图目标宽度（像素） */
+const THUMB_WIDTH = 132
+/** PDF 预览：可选缩放倍率 */
+const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3]
+/** PDF 预览：默认缩放倍率 */
+const DEFAULT_ZOOM = 1.5
 
 const NAV: Array<{ key: View; label: string }> = [
   { key: 'chat', label: '对话' },
@@ -940,12 +949,20 @@ function FilesView({
   const [image, setImage] = useState<DocumentPageImage | null>(null)
   const [imageBusy, setImageBusy] = useState(false)
   const [imageError, setImageError] = useState('')
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM)
+  const [pageInput, setPageInput] = useState('1')
+  const [thumbs, setThumbs] = useState<Record<number, DocumentPageImage>>({})
+  const [thumbBusy, setThumbBusy] = useState(false)
+  const [thumbError, setThumbError] = useState('')
+  const thumbsRef = useRef<Record<number, DocumentPageImage>>({})
 
-  const showPage = async (filePath: string, page: number): Promise<void> => {
+  const showPage = async (filePath: string, page: number, scale = zoom): Promise<void> => {
     setImageBusy(true)
     setImageError('')
     try {
-      setImage(await api.files.renderPage(filePath, page))
+      const img = await api.files.renderPage(filePath, page, scale)
+      setImage(img)
+      setPageInput(String(img.page))
     } catch (e) {
       setImage(null)
       setImageError(String(e instanceof Error ? e.message : e).slice(0, 200))
@@ -954,6 +971,45 @@ function FilesView({
     }
   }
 
+  /**
+   * 渲染缩略图窗口。已渲染过的页直接命中缓存，不重复渲染（主进程每次都要重解 PDF）。
+   * thumbsRef 与 state 双写：ref 同步更新（判断「缺哪几页」不能等 React 提交），
+   * state 用于渲染。
+   */
+  const loadThumbs = useCallback(async (filePath: string, pages: number[]): Promise<void> => {
+    const missing = pages.filter((p) => !thumbsRef.current[p])
+    if (missing.length === 0) return
+    setThumbBusy(true)
+    setThumbError('')
+    try {
+      const res = await api.files.renderThumbs(filePath, missing, THUMB_WIDTH)
+      const merged = { ...thumbsRef.current }
+      for (const t of res.thumbs) merged[t.page] = t
+      thumbsRef.current = merged
+      setThumbs(merged)
+    } catch (e) {
+      setThumbError(String(e instanceof Error ? e.message : e).slice(0, 200))
+    } finally {
+      setThumbBusy(false)
+    }
+  }, [])
+
+  const totalPages = preview?.pageCount ?? 0
+  const currentPage = image?.page ?? 1
+
+  /** 缩略图窗口：以当前页为中心的连续若干页（页数不够时从头排） */
+  const thumbPages = useMemo(() => {
+    if (!totalPages) return []
+    const win = Math.min(THUMB_WINDOW, totalPages)
+    const start = Math.min(Math.max(1, currentPage - Math.floor(win / 2)), Math.max(1, totalPages - win + 1))
+    return Array.from({ length: win }, (_, i) => start + i)
+  }, [totalPages, currentPage])
+
+  useEffect(() => {
+    if (!preview || preview.kind !== 'pdf' || !preview.pageCount || !preview.path) return
+    void loadThumbs(preview.path, thumbPages)
+  }, [preview, thumbPages, loadThumbs])
+
   const open = async (file: FileEntry): Promise<void> => {
     setCurrent(file.name)
     setContent('')
@@ -961,6 +1017,11 @@ function FilesView({
     setPreviewError('')
     setImage(null)
     setImageError('')
+    setZoom(DEFAULT_ZOOM)
+    setPageInput('1')
+    setThumbs({})
+    setThumbError('')
+    thumbsRef.current = {}
     // PDF / DOCX / PPTX / XLSX 走文档预览；其余格式维持原来的纯文本读取
     const isPdf = /\.pdf$/i.test(file.name)
     const isOffice = /\.(docx|pptx|xlsx)$/i.test(file.name)
@@ -971,7 +1032,8 @@ function FilesView({
         setPreview(p)
         if (p.error) setPreviewError(p.error)
         // PDF 额外渲染第 1 页位图（只给界面看，agent 仍读文本）
-        if (isPdf && !p.error) void showPage(file.path, 1)
+        // 显式给默认倍率：此刻 zoom 状态还没提交，闭包里的旧值可能是上一次打开时的缩放
+        if (isPdf && !p.error) void showPage(file.path, 1, DEFAULT_ZOOM)
       } catch (e) {
         setPreviewError(String(e instanceof Error ? e.message : e).slice(0, 200))
       } finally {
@@ -1024,48 +1086,123 @@ function FilesView({
                         : '非 PDF/DOCX/PPTX/XLSX 文档'}{' '}
                 · {preview.size} B{preview.truncated ? ' · 内容已截断' : ''}
               </p>
-              {preview.kind === 'pdf' && imageBusy ? (
-                <p className="hint" data-testid="doc-preview-image-busy">
-                  正在渲染位图…
-                </p>
-              ) : null}
-              {preview.kind === 'pdf' && imageError ? (
-                <p className="error-text" data-testid="doc-preview-image-error">
-                  {imageError}
-                </p>
-              ) : null}
-              {preview.kind === 'pdf' && image ? (
-                <figure data-testid="doc-preview-image-wrap">
-                  <img
-                    data-testid="doc-preview-image"
-                    src={image.dataUrl}
-                    alt={`第 ${image.page} 页`}
-                    style={{ maxWidth: '100%', border: '1px solid #ddd' }}
-                  />
-                  <figcaption className="hint" data-testid="doc-preview-image-meta">
-                    第 {image.page} / {preview.pageCount ?? '?'} 页 · {image.width}×{image.height}
-                  </figcaption>
-                  {(preview.pageCount ?? 1) > 1 ? (
-                    <div>
-                      <button
-                        className="link"
-                        data-testid="doc-preview-prev"
-                        disabled={imageBusy || image.page <= 1}
-                        onClick={() => void showPage(preview.path, image.page - 1)}
+              {preview.kind === 'pdf' ? (
+                <div className="doc-preview-pdf">
+                  <div className="doc-preview-toolbar" data-testid="doc-preview-toolbar">
+                    <button
+                      className="link"
+                      data-testid="doc-preview-prev"
+                      disabled={imageBusy || currentPage <= 1}
+                      onClick={() => void showPage(preview.path, currentPage - 1)}
+                    >
+                      上一页
+                    </button>{' '}
+                    <label className="inline">
+                      第
+                      <input
+                        className="doc-preview-page-input"
+                        data-testid="doc-preview-page-input"
+                        type="number"
+                        min={1}
+                        max={totalPages || 1}
+                        value={pageInput}
+                        onChange={(e) => setPageInput(e.target.value)}
+                      />
+                      / {totalPages || '?'} 页
+                    </label>{' '}
+                    <button
+                      className="link"
+                      data-testid="doc-preview-goto"
+                      disabled={imageBusy || totalPages <= 1}
+                      onClick={() => {
+                        const n = Math.floor(Number(pageInput))
+                        if (!Number.isFinite(n) || n < 1) return
+                        void showPage(preview.path, Math.min(n, totalPages))
+                      }}
+                    >
+                      跳转
+                    </button>{' '}
+                    <button
+                      className="link"
+                      data-testid="doc-preview-next"
+                      disabled={imageBusy || currentPage >= totalPages}
+                      onClick={() => void showPage(preview.path, currentPage + 1)}
+                    >
+                      下一页
+                    </button>{' '}
+                    <label className="inline">
+                      缩放
+                      <select
+                        className="doc-preview-zoom"
+                        data-testid="doc-preview-zoom"
+                        value={String(zoom)}
+                        onChange={(e) => {
+                          const z = Number(e.target.value)
+                          setZoom(z)
+                          void showPage(preview.path, currentPage, z)
+                        }}
                       >
-                        上一页
-                      </button>{' '}
-                      <button
-                        className="link"
-                        data-testid="doc-preview-next"
-                        disabled={imageBusy || image.page >= (preview.pageCount ?? 1)}
-                        onClick={() => void showPage(preview.path, image.page + 1)}
-                      >
-                        下一页
-                      </button>
+                        {ZOOM_LEVELS.map((z) => (
+                          <option key={z} value={String(z)}>
+                            {Math.round(z * 100)}%
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {totalPages > 1 ? (
+                    <div className="doc-preview-thumbs" data-testid="doc-preview-thumbs">
+                      {thumbBusy ? (
+                        <span className="hint" data-testid="doc-preview-thumbs-busy">
+                          正在渲染缩略图…
+                        </span>
+                      ) : null}
+                      {thumbError ? (
+                        <span className="error-text" data-testid="doc-preview-thumbs-error">
+                          {thumbError}
+                        </span>
+                      ) : null}
+                      {thumbPages.map((p) =>
+                        thumbs[p] ? (
+                          <button
+                            key={p}
+                            className="doc-preview-thumb"
+                            data-testid={`doc-preview-thumb-${p}`}
+                            data-active={currentPage === p ? 'true' : 'false'}
+                            title={`第 ${p} 页`}
+                            onClick={() => void showPage(preview.path, p)}
+                          >
+                            <img src={thumbs[p].dataUrl} alt={`第 ${p} 页缩略图`} />
+                            <span>{p}</span>
+                          </button>
+                        ) : null
+                      )}
                     </div>
                   ) : null}
-                </figure>
+                  {imageBusy ? (
+                    <p className="hint" data-testid="doc-preview-image-busy">
+                      正在渲染位图…
+                    </p>
+                  ) : null}
+                  {imageError ? (
+                    <p className="error-text" data-testid="doc-preview-image-error">
+                      {imageError}
+                    </p>
+                  ) : null}
+                  {image ? (
+                    <figure data-testid="doc-preview-image-wrap">
+                      <img
+                        data-testid="doc-preview-image"
+                        src={image.dataUrl}
+                        alt={`第 ${image.page} 页`}
+                        style={{ maxWidth: '100%', border: '1px solid #ddd' }}
+                      />
+                      <figcaption className="hint" data-testid="doc-preview-image-meta">
+                        第 {image.page} / {preview.pageCount ?? '?'} 页 · {image.width}×{image.height}
+                      </figcaption>
+                    </figure>
+                  ) : null}
+                </div>
               ) : null}
               {preview.kind === 'docx' || preview.kind === 'pptx' || preview.kind === 'xlsx' ? (
                 <pre data-testid="doc-preview-text">{preview.text || '（没有可抽取的文字）'}</pre>

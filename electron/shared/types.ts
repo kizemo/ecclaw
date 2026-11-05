@@ -223,6 +223,14 @@ export interface DocumentPageImage {
   dataUrl: string
 }
 
+/** 多页缩略图渲染结果（第三十阶段：PDF 缩略图导航，PDF 专用） */
+export interface DocumentPageThumbs {
+  /** 文档总页数 */
+  pageCount: number
+  /** 已渲染的缩略图（按请求顺序） */
+  thumbs: DocumentPageImage[]
+}
+
 export interface GatewayStatus {
   running: boolean
   pid?: number
@@ -741,7 +749,8 @@ export interface EcclawApi {
     list(): Promise<FileEntry[]>
     read(path: string): Promise<string>
     preview(path: string): Promise<DocumentPreview>
-    renderPage(path: string, page?: number): Promise<DocumentPageImage>
+    renderPage(path: string, page?: number, scale?: number): Promise<DocumentPageImage>
+    renderThumbs(path: string, pages?: number[], width?: number): Promise<DocumentPageThumbs>
   }
   chat: {
     send(text: string, sessionId?: string): Promise<ChatMessage>

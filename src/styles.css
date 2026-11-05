@@ -150,3 +150,21 @@ button.link:hover { color: var(--accent); }
 .approval-card strong { font-size: 13px; }
 .approval-card .hint { white-space: pre-wrap; word-break: break-all; }
 .approval-card .row { justify-content: flex-end; }
+
+/* PDF 预览：翻页工具条 + 缩略图导航条（第三十阶段） */
+.doc-preview-pdf { display: flex; flex-direction: column; gap: 10px; }
+.doc-preview-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.doc-preview-toolbar label.inline { flex-direction: row; align-items: center; gap: 6px; }
+.doc-preview-page-input { width: 72px; padding: 4px 6px; }
+.doc-preview-zoom { width: auto; padding: 4px 6px; }
+.doc-preview-thumbs {
+  display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
+  padding: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.doc-preview-thumb {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  font-size: 11px; color: var(--muted);
+}
+.doc-preview-thumb img { display: block; width: 66px; height: auto; background: #fff; border-radius: 4px; }
+.doc-preview-thumb[data-active='true'] { border-color: var(--accent); color: var(--text); }

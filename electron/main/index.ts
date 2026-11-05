@@ -66,7 +66,7 @@ import {
 } from './write-guard'
 import type { AllowRule, ApprovalScope, HostViewportBounds, WriteGuardMode } from '../shared/types'
 import { listFiles, listSkills, readFile, readSkill, saveSkill, deleteSkill } from './library'
-import { previewDocument, renderDocumentPage } from './document-preview'
+import { previewDocument, renderDocumentPage, renderDocumentThumbs } from './document-preview'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -314,8 +314,11 @@ function registerIpc(): void {
   ipcMain.handle('files:list', () => listFiles())
   ipcMain.handle('files:read', (_e, filePath: string) => readFile(filePath))
   ipcMain.handle('files:preview', (_e, filePath: string) => previewDocument({ path: filePath }))
-  ipcMain.handle('files:preview-image', (_e, filePath: string, page?: number) =>
-    renderDocumentPage({ path: filePath, page })
+  ipcMain.handle('files:preview-image', (_e, filePath: string, page?: number, scale?: number) =>
+    renderDocumentPage({ path: filePath, page, scale })
+  )
+  ipcMain.handle('files:preview-thumbs', (_e, filePath: string, pages?: number[], width?: number) =>
+    renderDocumentThumbs({ path: filePath, pages, width })
   )
 
   ipcMain.handle('chat:send', (_e, text: string, sessionId?: string) => chatSend(text, sessionId))

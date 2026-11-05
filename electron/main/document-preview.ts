@@ -17,6 +17,7 @@ import type {
  * 第二十三阶段：补 PPTX / XLSX 文本抽取（复用同一套 zip + XML 路径）。
  * 第二十四阶段：XLSX 日期还原（读 styles.xml 的 numberFormat，序列号 → 日期）。
  * 第二十五阶段：XLSX 照搬 Excel 显示样式（日期/数字统一按 formatCode 渲染）+ DOCX 表格转 Markdown。
+ * 第三十阶段：PDF 多页缩略图（按目标宽度归一渲染）+ 渲染参数（page / scale）暴露到界面。
  *
  * 设计约束（本阶段）：
  *   - **只读**：只读文件库里已有的文件，不写回、不改用户数据；
@@ -45,6 +46,13 @@ const MAX_CHARS = 200_000
 /** 位图渲染缩放范围 */
 const MIN_SCALE = 0.5
 const MAX_SCALE = 3
+/** 缩略图默认目标宽度（像素）：比 scale 更贴近「导航条」的语义 */
+const THUMB_WIDTH = 132
+/** 缩略图宽度上下限 */
+const MIN_THUMB_WIDTH = 48
+const MAX_THUMB_WIDTH = 400
+/** 一次最多渲染多少张缩略图（防止一次渲染几十页把主进程卡住） */
+const MAX_THUMBS = 24
 
 /** 文件库根目录（文件库 = <state>/file-library/files 下的平铺文件） */
 function libraryRoot(): string {
@@ -232,6 +240,8 @@ function loadPdfjs(): PdfjsModule {
 /* ------------------------------ canvas 加载 ------------------------------ */
 
 interface Canvas2D {
+  fillStyle: string
+  fillRect(x: number, y: number, w: number, h: number): void
   [key: string]: unknown
 }
 interface CanvasHandle {
@@ -1989,6 +1999,34 @@ export interface DocumentPageImageInput {
   scale?: number
 }
 
+/** 打开 PDF（解析一次，供文本抽取 / 位图渲染共用） */
+async function openPdfDoc(filePath: string): Promise<PdfDocument> {
+  const pdfjs = loadPdfjs()
+  const data = new Uint8Array(fs.readFileSync(filePath))
+  return pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise
+}
+
+/** 把 PDF 的某一页渲染成 PNG（只给界面看；agent 读文本即可） */
+async function renderPdfPageToPng(
+  doc: PdfDocument,
+  canvasMod: CanvasModule,
+  pageNo: number,
+  scale: number
+): Promise<DocumentPageImage> {
+  const page = await doc.getPage(pageNo)
+  const viewport = page.getViewport({ scale })
+  const canvas = canvasMod.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height))
+  const ctx = canvas.getContext('2d')
+  await page.render({ canvas, canvasContext: ctx, viewport }).promise
+  const png = canvas.toBuffer('image/png')
+  return {
+    page: pageNo,
+    width: canvas.width,
+    height: canvas.height,
+    dataUrl: `data:image/png;base64,${png.toString('base64')}`
+  }
+}
+
 /**
  * 把 PDF 的某一页渲染成 PNG data URL（只给界面看；agent 读文本即可）。
  * 出错直接抛（调用方是 IPC/界面，不是 agent），由界面显示原因。
@@ -2002,22 +2040,78 @@ export async function renderDocumentPage(input: DocumentPageImageInput): Promise
   }
 
   const canvasMod = loadCanvas()
-  const pdfjs = loadPdfjs()
-  const data = new Uint8Array(fs.readFileSync(resolved))
-  const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise
+  const doc = await openPdfDoc(resolved)
   const pageNo = Math.max(1, Math.min(Math.floor(input.page ?? 1), doc.numPages))
   const scale = Math.max(MIN_SCALE, Math.min(input.scale ?? 1.5, MAX_SCALE))
 
-  const page = await doc.getPage(pageNo)
-  const viewport = page.getViewport({ scale })
-  const canvas = canvasMod.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height))
-  const ctx = canvas.getContext('2d')
-  await page.render({ canvas, canvasContext: ctx, viewport }).promise
-  const png = canvas.toBuffer('image/png')
-  return {
-    page: pageNo,
-    width: canvas.width,
-    height: canvas.height,
-    dataUrl: `data:image/png;base64,${png.toString('base64')}`
+  return renderPdfPageToPng(doc, canvasMod, pageNo, scale)
+}
+
+export interface DocumentThumbsInput {
+  path?: string
+  name?: string
+  /** 要出缩略图的页码（1 起）；不给则取前若干页 */
+  pages?: number[]
+  /** 缩略图目标宽度（像素，默认 132） */
+  width?: number
+}
+
+export interface DocumentPageThumbs {
+  /** 文档总页数 */
+  pageCount: number
+  /** 已渲染的缩略图（按请求顺序） */
+  thumbs: DocumentPageImage[]
+}
+
+/**
+ * 渲染多页缩略图（导航条用；只给界面看，agent 读文本即可）。
+ *
+ * 缩略图按**目标宽度**归一，而不是按固定 scale —— PDF 页面尺寸不一（A4 / Letter / 横向），
+ * 固定 scale 会让缩略图宽窄不一。宽度相同才排得齐。
+ * 出错直接抛（调用方是 IPC/界面），由界面显示原因。
+ */
+export async function renderDocumentThumbs(input: DocumentThumbsInput): Promise<DocumentPageThumbs> {
+  const resolved = resolveInputPath(input)
+  const stat = fs.statSync(resolved)
+  if (detectDocumentKind(resolved) !== 'pdf') throw new Error('只有 PDF 支持位图预览')
+  if (stat.size > MAX_FILE_BYTES) {
+    throw new Error(`文件过大（${stat.size} B），超过 ${MAX_FILE_BYTES} B 上限，不渲染`)
   }
+
+  const canvasMod = loadCanvas()
+  const doc = await openPdfDoc(resolved)
+  const width = Math.max(MIN_THUMB_WIDTH, Math.min(Math.round(input.width ?? THUMB_WIDTH), MAX_THUMB_WIDTH))
+
+  // 请求的页码先过滤掉越界 / 非法的；全空则退回「前若干页」
+  const asked = (input.pages ?? []).filter((n) => Number.isFinite(n) && Math.floor(n) >= 1 && Math.floor(n) <= doc.numPages)
+  const wanted = (asked.length ? asked : Array.from({ length: Math.min(doc.numPages, MAX_THUMBS) }, (_, i) => i + 1)).slice(
+    0,
+    MAX_THUMBS
+  )
+
+  const thumbs: DocumentPageImage[] = []
+  for (const raw of wanted) {
+    const pageNo = Math.floor(raw)
+    const page = await doc.getPage(pageNo)
+    const base = page.getViewport({ scale: 1 })
+    const scale = width / Math.max(1, base.width)
+    const viewport = page.getViewport({ scale })
+    // 用 round 而不是 ceil：scale 是除法算出来的，viewport.width 常是 400.00000000000006 这种值，
+    // ceil 会把它顶成 401（缩略图就比目标宽多 1 px，宽度不归一）。
+    const canvas = canvasMod.createCanvas(Math.round(viewport.width), Math.round(viewport.height))
+    const ctx = canvas.getContext('2d')
+    // PDF 页面本身不画背景（透明），先铺白底再渲染，避免缩略图发黑
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise
+    const png = canvas.toBuffer('image/png')
+    thumbs.push({
+      page: pageNo,
+      width: canvas.width,
+      height: canvas.height,
+      dataUrl: `data:image/png;base64,${png.toString('base64')}`
+    })
+  }
+
+  return { pageCount: doc.numPages, thumbs }
 }

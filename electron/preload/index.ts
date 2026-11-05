@@ -5,6 +5,7 @@ import type {
   EcclawApi,
   FileEntry,
   DocumentPageImage,
+  DocumentPageThumbs,
   DocumentPreview,
   GatewayStatus,
   HostCommandResult,
@@ -188,8 +189,10 @@ const api: EcclawApi = {
     list: (): Promise<FileEntry[]> => ipcRenderer.invoke('files:list'),
     read: (path: string): Promise<string> => ipcRenderer.invoke('files:read', path),
     preview: (path: string): Promise<DocumentPreview> => ipcRenderer.invoke('files:preview', path),
-    renderPage: (path: string, page?: number): Promise<DocumentPageImage> =>
-      ipcRenderer.invoke('files:preview-image', path, page)
+    renderPage: (path: string, page?: number, scale?: number): Promise<DocumentPageImage> =>
+      ipcRenderer.invoke('files:preview-image', path, page, scale),
+    renderThumbs: (path: string, pages?: number[], width?: number): Promise<DocumentPageThumbs> =>
+      ipcRenderer.invoke('files:preview-thumbs', path, pages, width)
   },
   chat: {
     send: (text: string, sessionId?: string): Promise<ChatMessage> =>
