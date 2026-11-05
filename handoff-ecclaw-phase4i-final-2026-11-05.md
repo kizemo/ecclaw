@@ -146,7 +146,7 @@
 
 | 提交 | 内容 |
 |---|---|
-| `__FEAT_COMMIT__` | `feat(document-preview): add XLSX locale expansion and text placeholders` —— 本次回填 |
+| `05f5857` | `feat(document-preview): add XLSX locale expansion and text placeholders`（6 files, +628/−29） |
 | `__DOC_COMMIT__` | `docs: record phase 4i commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
@@ -166,4 +166,4 @@
 6. ✅ README §5.38 + §5.37 补注 + 底部能力清单；task.md 第三十四阶段表 + 顶部状态段；
    项目记忆 `ecclaw_phase4i_locale.md` + `MEMORY.md` 索引
 7. ✅ `prompt-ecclaw-phase4i-next.md`（<30 行，只做接力指针）
-8. ✅ **git commit** —— `__FEAT_COMMIT__`（feat）+ `__DOC_COMMIT__`（docs 回填 hash，**不 amend**）
+8. ✅ **git commit** —— `05f5857`（feat）+ `__DOC_COMMIT__`（docs 回填 hash，**不 amend**）

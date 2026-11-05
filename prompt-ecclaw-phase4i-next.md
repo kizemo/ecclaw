@@ -2,7 +2,7 @@
 
 **承接**：`handoff-ecclaw-phase4i-final-2026-11-05.md`（第三十四阶段收官，XLSX 日期 locale 扩展 + 文本格 `@` 字面量）
 
-**基线**：HEAD = phase4i 的 feat 提交（hash 见 handoff §5 已回填）；工作区干净树；
+**基线**：HEAD = phase4i 的 feat 提交 `05f5857`（hash 见 handoff §9 已回填）；工作区干净树；
 工具数 **27**；stateDir `C:\Users\Duanyi\AppData\Roaming\ecclaw\openclaw\.openclaw`。
 
 **本轮选哪个候选**：见 handoff §8「下一阶段候选」—— ⚠️ **候选清单会过期，先写探针脚本实测再选题**，
