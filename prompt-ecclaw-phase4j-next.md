@@ -1,6 +1,6 @@
 承接：handoff-ecclaw-phase4j-final-2026-11-06.md（第三十五阶段收官 · DOCX 结构保真）
 
-基线：HEAD = 42de99d + 本轮提交（见 git log）；工作区应干净。
+基线：HEAD = a817300（docs 回填）/ 2065ecb（feat）；工作区应干净。
 工具数 27；stateDir C:\Users\Duanyi\AppData\Roaming\ecclaw\openclaw\.openclaw。
 
 本轮选哪个候选：**PPTX 表格 + 演讲者备注**（handoff §4 候选 1；探针已实测，勿重做）——
