@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "packageId": "ecclaw-writer-demo",
+  "displayName": "写操作示例包",
+  "version": "0.1.0",
+  "platform": "ecclaw-demo",
+  "description": "ecclaw 示例包：演示 dabi 的写操作契约（browser.click / scroll / interceptNext / waitForNavigation），用于宿主写操作通道的端到端验证",
+  "sites": ["localhost"],
+  "match": ["127.0.0.1", "localhost"],
+  "runtime": "runtime.cjs",
+  "pages": [
+    { "id": "builtin:ecclaw-writer-demo", "path": "writer", "type": "demo" }
+  ]
+}

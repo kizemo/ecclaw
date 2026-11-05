@@ -1,0 +1,6 @@
+# prompt · ecclaw 第十八阶段（phase3s）接力 · 2026-11-03
+
+> 用法：新会话里粘贴下面**一段**（整段就是一句话）。本文件只做「进行中」接力；
+> phase3s 收官时另按惯例产出 `prompt-ecclaw-phase3s-next.md`（接下一阶段），勿混用。
+
+请先按 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3s-2026-11-03.md` 的 **§4 下个会话必做**顺序，把它列出的文档读透——至少包括该 handoff 本身（§1 三轮跑分史 / §2 真站三 stage 实锤 / §5 剩余 4 项 FAIL 明细 / §6 踩坑 / §7 环境运行态）、`F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3r-final-2026-11-03.md`（§0 架构 / §6 复现命令 / §9 坑 / §10 红线照旧有效）、`F:\soft\00selfmade\ecclaw\README.md` §5.21 与 §8、`F:\soft\00selfmade\ecclaw\task.md` 顶部状态段，以及 `E:\Users\Duanyi\.claude\projects\F--soft-00selfmade-ecclaw\memory\MEMORY.md` 索引下与宿主护栏/事件/界面验证相关的记忆文件（重点 `ecclaw_phase3q_approval_events.md`、`ecclaw_phase3r_kind_filter_export.md`、`feedback_gui_verify_cdp.md`），充分掌握：项目背景（OpenClaw 内核 + 写操作护栏 + 事件落盘的电商桌面端）、第十八阶段目标（rejected/timeout/failed 三 stage 淘宝真站复验，主体已 45/49 实锤、三 stage 证据已全部落盘）、剩余待办（终态卡片 12s 自动收定时器疑似真 bug 的现场取证与定性、卡片 scope 默认值 session/once 之谜、重跑到 49/49、六套回归 3r/3q/3p/3o/3m/sse、README §5.22 与 task.md/memory/收官 handoff/prompt 文档五件套、环境拆除）与当前运行态（Electron 在跑新渲染层且堆栈里可能留有活现场卡——**第一步先 CDP 取证、不要先重启 Electron**；8898/8897 夹具在跑；淘宝已登录），然后直接按该 handoff §4 从第 1 步开始接力执行（e2e 重跑期间提醒用户勿碰 GUI 护栏卡；红线照旧：exports 只增不删、真站只用 scroll、GUI 只走 CDP、禁 git、临时产物在 `C:\Temp\`），已完成的细节不要复述给我。

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "packageId": "1688",
+  "displayName": "1688",
+  "version": "0.1.0",
+  "platform": "alibaba-family",
+  "description": "1688 采销宝/商品操作技能包（ecclaw 示例实现）",
+  "sites": ["1688"],
+  "match": ["1688.com", "*.1688.com"],
+  "matchPriority": 10,
+  "minClientVersion": "0.1.0",
+  "runtime": "runtime.cjs",
+  "pages": [
+    { "id": "builtin:1688-search", "path": "search", "type": "search", "docs": "docs/al/1688/search-results.md" },
+    { "id": "builtin:1688-detail", "path": "detail", "type": "product", "docs": "docs/al/1688/product-detail.md" }
+  ]
+}

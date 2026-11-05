@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "packageId": "taobao",
+  "displayName": "淘宝/天猫",
+  "version": "0.1.0",
+  "platform": "taobao-family",
+  "description": "淘宝/天猫店铺后台操作技能包（ecclaw 示例实现，协议对齐 dabi platform-packages）",
+  "sites": ["taobao", "tmall"],
+  "match": ["taobao.com", "*.taobao.com", "tmall.com", "*.tmall.com"],
+  "matchPriority": 10,
+  "minClientVersion": "0.1.0",
+  "runtime": "runtime.cjs",
+  "pages": [
+    { "id": "builtin:taobao-detail", "path": "detail", "type": "product", "docs": "docs/tx/taobao/product-detail.md" },
+    { "id": "builtin:taobao-search", "path": "search", "type": "search", "docs": "docs/tx/taobao/search-results.md" },
+    { "id": "builtin:taobao-shop", "path": "shop", "type": "shop", "docs": "docs/tx/taobao/shop.md" }
+  ]
+}

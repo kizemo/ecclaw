@@ -1,0 +1,3 @@
+# prompt · ecclaw 第十四阶段接力 · 2026-11-02
+
+请先完整阅读 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3n-2026-11-02.md`（它包含项目背景、六层架构、阶段进度、核心契约、完整文件路径、运行/验证方式、红线与踩坑清单），再按该文件第 2 节「必读顺序」补读 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3m-final-2026-11-02.md`、`F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3m-2026-11-02.md`、`F:\soft\00selfmade\ecclaw\README.md` §5.14–§5.17、`F:\soft\00selfmade\ecclaw\task.md` 与 `E:\Users\Duanyi\.claude\projects\F--soft-00selfmade-ecclaw\memory\MEMORY.md`，掌握项目背景、目标与进度后，用 AskUserQuestion 与我确认第十四阶段范围（该文件第 7 节列了三个候选：①事件 seq 空间遗留问题【推荐】②导出物清理入口③趋势图可视化），确认后按六层交付 + 真机 e2e 的既有标准推进，收尾写 `handoff-ecclaw-phase3o-<date>.md` 与 `prompt-ecclaw-phase3o-next.md`。

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "packageId": "douyin",
+  "displayName": "抖音",
+  "version": "0.1.0",
+  "platform": "douyin-family",
+  "description": "抖音创作者中心/电商罗盘操作技能包（ecclaw 示例实现）",
+  "sites": ["douyin"],
+  "match": ["douyin.com", "*.douyin.com", "jinritemai.com", "*.jinritemai.com"],
+  "matchPriority": 20,
+  "minClientVersion": "0.1.0",
+  "runtime": "runtime.cjs",
+  "pages": [
+    { "id": "builtin:douyin-creator-home", "path": "creator-home", "type": "dashboard" },
+    { "id": "builtin:douyin-video-list", "path": "video-list", "type": "list" }
+  ]
+}

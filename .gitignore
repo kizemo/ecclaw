@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+
+# 构建产物
+out/
+dist/
+release/
+*.tsbuildinfo
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 本地环境与密钥（真实配置在 stateDir，不在仓库根）
+.env
+.env.*
+*.pem
+*.key
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,5 @@
+# prompt · ecclaw 下一阶段（接 phase3q 收官）· 2026-11-03
+
+> 用法：新会话里粘贴下面**一段**（整段就是一句话）。
+
+请先按 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3q-final-2026-11-03.md` 的 **§1 必读顺序**把该文档列出的 7 份带完整路径的文档读完（以该 handoff 的 **§0 项目背景与目标 / §2 状态速览 / §5 验证证据 / §6 复现步骤 / §7 下一阶段 / §8 环境基线 / §9 踩坑 / §10 红线** 为你的全部输入，其中已完成的细节不要复述给我），搞清 ecclaw 这个「基于 OpenClaw 的电商 AI 桌面端」的整体架构、第十六阶段真机验证到了哪一步、当前环境状态（Electron/夹具均已关停、代码未 commit 且项目非 git 仓库）与未决问题，然后用 **AskUserQuestion** 让我从其 **§7.1** 的 A（真实站点 click 类写操作闭环）/ B（rejected·timeout·failed 三条 stage 真站复验）/ C（第二阶段外壳候选）/ D（事件流筛选与导出物小尾巴）里拍板下一阶段范围，选定后按「主进程 → 共享类型 → preload → 渲染层 → MCP → 文档」六层交付（每层跑 `pnpm typecheck` 两段 tsc + `pnpm build`，GUI 一律走 CDP `--remote-debugging-port=9222` 不用 computer-use，写 e2e 跑到全绿后再补 `F:\soft\00selfmade\ecclaw\README.md` §5.21、`F:\soft\00selfmade\ecclaw\task.md` 顶部状态与阶段表、`E:\Users\Duanyi\.claude\projects\F--soft-00selfmade-ecclaw\memory\` 项目记忆与 `MEMORY.md` 索引、以及一份 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase3*-final-<date>.md` 收官 handoff 和对应的 `F:\soft\00selfmade\ecclaw\prompt-ecclaw-phase3*-next.md`）。
