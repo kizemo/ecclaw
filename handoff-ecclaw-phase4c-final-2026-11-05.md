@@ -134,7 +134,9 @@ node C:/Temp/ecclaw-verify/rerun-and-regress11.cjs   # run60-*
 ## 9. 提交记录（已完成 · 2026-11-05）
 
 **结果**：`git init` 已执行，首个提交 **`f5c1da4`**
-`chore: initial import of ecclaw source tree`（133 files / 30,230 insertions），工作区干净。
+`chore: initial import of ecclaw source tree`（133 files / 30,230 insertions）；
+随后 **`6a4fc47`** `docs: record phase 4c commit and refresh handoff pointer`（本文档 + 接力 prompt）。
+工作区干净。
 `.gitignore` 已按下方内容创建。后续阶段在此基础上增量提交。
 （提交前原计划只加 5 个文件；因仓库是首次初始化，改为整树导入，否则 `git diff` 无基线可对。）
 

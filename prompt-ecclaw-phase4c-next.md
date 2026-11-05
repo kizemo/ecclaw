@@ -1,6 +1,6 @@
 # prompt · ecclaw 下一会话接力（phase4c 之后）
 
-承接 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase4c-final-2026-11-05.md`（已提交，HEAD `f5c1da4`）。
+承接 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase4c-final-2026-11-05.md`（已提交：`f5c1da4` 整树导入 + `6a4fc47` 文档）。
 
 按该 handoff **§1 的必读顺序**读完下列文档，掌握项目背景 / 目标 / 进度 / 下阶段计划后再动手：
 
