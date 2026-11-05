@@ -7,9 +7,8 @@
 > 秒级自测 **33/33**、**phase4e e2e 21/21**、typecheck/build ✅。
 >
 > **本轮状态**：实现、自测、e2e、README §5.34、task.md 表格、项目记忆**均已完成**；
-> **全量回归 run63 由后台驱动跑完（结果见 §4）**。
-> **⚠ 未提交**：上下文预算闸门（ctx-budget-guard）在收尾时触发，Bash 被拒 →
-> **git add + commit 尚未执行**，见 §9「剩余动作」。
+> **全量回归 run63 十七套 524/524 全绿**（见 §4）。
+> **已提交**：`dade022`（feat），本 handoff 的 hash 回填用 `docs:` 小提交补记（不 amend）。
 
 ---
 
@@ -149,11 +148,13 @@ node C:/Temp/ecclaw-verify/rerun-and-regress14.cjs   # run63-*
 
 ---
 
-## 9. 提交记录（**尚未执行 —— 见「剩余动作」**）
+## 9. 提交记录
 
-### 剩余动作（本轮上下文闸门触发，Bash 被拒，未能提交）
+| 提交 | 内容 |
+|---|---|
+| `dade022` | `feat(document-preview): add PDF page thumbnails and render controls` —— 11 files changed, 608 insertions(+), 64 deletions(-) |
 
-在**新会话**里执行（逐个精确 `git add`，禁止 `git add -A`）：
+已精确 `git add` 下列 11 个文件提交（**未用 `git add -A`**）：
 
 | 文件 | 说明 |
 |---|---|
@@ -169,21 +170,8 @@ node C:/Temp/ecclaw-verify/rerun-and-regress14.cjs   # run63-*
 | `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase4e-final-2026-11-05.md` | 本文档 |
 | `F:\soft\00selfmade\ecclaw\prompt-ecclaw-phase4e-next.md` | 接力指针 |
 
-**不提交**：`node_modules/`、`out/`、`C:\Temp\ecclaw-verify\*`（不在仓库内）、
+**未提交**：`node_modules/`、`out/`、`C:\Temp\ecclaw-verify\*`（不在仓库内）、
 `openclaw.json` / `host-bridge.json`（在 stateDir）、任何 `.env` / 密钥。
-
-commit message（Conventional Commits）：
-
-```
-feat(document-preview): add PDF page thumbnails and render controls
-
-Render a sliding 12-page thumbnail strip for PDF previews, normalised by
-target width (PDF pages differ in size), plus page jump and zoom controls.
-Thumbnails are cached so re-renders do not re-parse the PDF. Bitmaps stay
-UI-only; tools stay at 27.
-```
-
-提交后把 hash 回填本节（用 `docs:` 小提交补记，不 amend）。
 
 ---
 
@@ -198,4 +186,4 @@ UI-only; tools stay at 27.
 7. ✅ 全量回归 run63 十七套 **524/524**（摘要 `run63-summary.txt`；未跑真站 phase3s/3q）
 8. ✅ README §5.34 + 能力清单；task.md 第三十阶段表 + 顶部状态段；项目记忆 `ecclaw_phase4e_pdf_thumbs.md` + `MEMORY.md` 索引
 9. ✅ `prompt-ecclaw-phase4e-next.md`（<30 行，只做接力指针）
-10. ⏳ **git commit 未执行**（ctx-budget-guard 拦了 Bash）→ 见 §9「剩余动作」
+10. ✅ **git commit 已执行** —— `dade022`（11 files, +608/−64），hash 已回填 §9
