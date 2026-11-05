@@ -215,3 +215,9 @@ node C:/Temp/ecclaw-verify/rerun-and-regress17.cjs
 **踩坑**：driver 第一次起 Electron 时 `npx electron` 冷启动 >90s → 第一套被判 `ENV-DEAD skip`。
 → **接手跑回归前先手动 `start-electron.ps1` 并确认 `curl http://127.0.0.1:9222/json/list`
 能出 `out/renderer/index.html`，再跑驱动**，否则第一套会被跳过（后面 18 套不受影响）。
+
+**踩坑（补记）**：**别把旧驱动留在后台跑**。上一会话挂死的 v16 驱动在本轮结束后才收尾，
+它会**用同一前缀覆盖 `run65-summary.txt` 与 `run65-*.log`** —— 其 phase3y 是被 32 分钟超时
+**杀掉**的（PASS=26、FAIL=0，因为中途被杀来不及记 FAIL），一度把摘要污染成 26/31。
+→ 收尾时**以日志文件为准重建摘要**（数 `[*] PASS` / `[*] FAIL`），别只信 summary 文本；
+→ 跑新驱动前先确认没有旧驱动进程在跑。
