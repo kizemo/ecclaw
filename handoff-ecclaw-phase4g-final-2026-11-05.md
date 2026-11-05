@@ -164,9 +164,8 @@ node C:/Temp/ecclaw-verify/rerun-and-regress17.cjs
 
 | 提交 | 内容 |
 |---|---|
-| `__COMMIT_HASH__` | `feat(document-preview): add XLSX range-level conditional formats` —— 待回填 |
-
-hash 回填方式：feat 提交落地后，用一个 `docs:` 小提交把本行 hash 写进来（**不 amend**）。
+| `0d99c96` | `feat(document-preview): add XLSX range-level conditional formats`（5 files, +480/−19） |
+| `__DOC_COMMIT__` | `docs: record phase 4g commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
 
@@ -194,7 +193,7 @@ hash 回填方式：feat 提交落地后，用一个 `docs:` 小提交把本行 
 7. ✅ 全量回归 run65 十九套 **580/580**（摘要 `run65-summary.txt`；未跑真站 phase3s/3q）
 8. ✅ README §5.36 + 能力清单；task.md 第三十二阶段表 + 顶部状态段；项目记忆 `ecclaw_phase4g_xlsx_range_cf.md` + `MEMORY.md` 索引
 9. ✅ `prompt-ecclaw-phase4g-next.md`（<30 行，只做接力指针）
-10. ⬜ **git commit** —— 待执行；hash 用 `docs:` 小提交回填（**不 amend**）
+10. ✅ **git commit** —— `0d99c96`（feat）+ 本 `docs:` 小提交回填 hash（**未 amend**）
 
 ---
 
