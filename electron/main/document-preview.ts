@@ -1191,7 +1191,7 @@ function splitFormatSections(code: string): string[] {
   return out
 }
 
-type DateTokenType = 'y' | 'm' | 'd' | 'h' | 's' | 'ampm' | 'ap' | 'eh' | 'em' | 'es' | 'literal'
+type DateTokenType = 'y' | 'm' | 'd' | 'h' | 's' | 'ampm' | 'ap' | 'eh' | 'em' | 'es' | 'literal' | 'locale'
 
 interface DateToken {
   type: DateTokenType
@@ -1229,13 +1229,19 @@ function tokenizeDateCode(section: string): DateToken[] {
     if (ch === '[') {
       const end = section.indexOf(']', i)
       const inner = end < 0 ? '' : section.slice(i + 1, end)
-      const elapsed = /^([hms])\1*$/i.exec(inner)
-      if (elapsed) {
-        const unit = elapsed[1].toLowerCase()
-        tokens.push({ type: unit === 'h' ? 'eh' : unit === 'm' ? 'em' : 'es', text: inner, count: inner.length })
+      // `[$-804]` = locale 前缀（zh-CN）；只记 locale，不产生任何字面量
+      const locale = /^\$-([0-9A-Fa-f]+)$/.exec(inner)
+      if (locale) {
+        tokens.push({ type: 'locale', text: locale[1], count: 0 })
       } else {
-        const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
-        if (currency) tokens.push({ type: 'literal', text: currency, count: 0 })
+        const elapsed = /^([hms])\1*$/i.exec(inner)
+        if (elapsed) {
+          const unit = elapsed[1].toLowerCase()
+          tokens.push({ type: unit === 'h' ? 'eh' : unit === 'm' ? 'em' : 'es', text: inner, count: inner.length })
+        } else {
+          const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
+          if (currency) tokens.push({ type: 'literal', text: currency, count: 0 })
+        }
       }
       i = end < 0 ? section.length : end + 1
       continue
@@ -1271,6 +1277,16 @@ const MONTH_LONG = [
 const WEEK_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const WEEK_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
+/** 中文月/星期名（只在格式码写了 zh-CN locale 前缀时启用，见 §5.37） */
+const MONTH_ZH = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二']
+const WEEK_ZH = ['日', '一', '二', '三', '四', '五', '六']
+
+/** locale id → 是否简体中文（Excel 的 zh-CN LCID = 0x804） */
+function isZhLocale(localeId: string): boolean {
+  const id = localeId.trim().toLowerCase().replace(/^0+(?=\d)/, '')
+  return id === '804'
+}
+
 /** 判断一段格式码是不是日期/时间（含 [h] 时长） */
 function isDateFormat(code: string): DateToken[] | null {
   const section = splitFormatSections(code)[0] ?? ''
@@ -1293,6 +1309,9 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
   const pad = (n: number, width: number): string => String(n).padStart(width, '0')
   const ampmToken = tokens.find((t) => t.type === 'ampm' || t.type === 'ap')
   const use12h = ampmToken !== undefined
+  // 写了 `[$-804]`（zh-CN locale 前缀）→ 月/星期/上下午出中文；否则固定英文（可复现）
+  const localeToken = tokens.find((t) => t.type === 'locale')
+  const zh = localeToken !== undefined && isZhLocale(localeToken.text)
   const hour12 = p.hh % 12 === 0 ? 12 : p.hh % 12
   const isMinuteAt = (k: number): boolean => {
     let prev: DateToken | null = null
@@ -1324,14 +1343,23 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
         break
       case 'm':
         if (isMinuteAt(k)) out += t.count === 1 ? String(p.mi) : pad(p.mi, 2)
-        else if (t.count >= 5) out += MONTH_LONG[p.mo - 1].slice(0, 1)
+        else if (zh) {
+          if (t.count >= 5) out += MONTH_ZH[p.mo - 1].slice(0, 1)
+          else if (t.count === 4) out += `${MONTH_ZH[p.mo - 1]}月`
+          else if (t.count === 3) out += `${p.mo}月`
+          else out += t.count === 1 ? String(p.mo) : pad(p.mo, 2)
+        } else if (t.count >= 5) out += MONTH_LONG[p.mo - 1].slice(0, 1)
         else if (t.count === 4) out += MONTH_LONG[p.mo - 1]
         else if (t.count === 3) out += MONTH_SHORT[p.mo - 1]
         else out += t.count === 1 ? String(p.mo) : pad(p.mo, 2)
         break
       case 'd': {
         const weekday = new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay()
-        if (t.count >= 4) out += WEEK_LONG[weekday]
+        if (zh) {
+          if (t.count >= 4) out += `星期${WEEK_ZH[weekday]}`
+          else if (t.count === 3) out += `周${WEEK_ZH[weekday]}`
+          else out += t.count === 1 ? String(p.d) : pad(p.d, 2)
+        } else if (t.count >= 4) out += WEEK_LONG[weekday]
         else if (t.count === 3) out += WEEK_SHORT[weekday]
         else out += t.count === 1 ? String(p.d) : pad(p.d, 2)
         break
@@ -1343,10 +1371,12 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
         out += t.count === 1 ? String(p.ss) : pad(p.ss, 2)
         break
       case 'ampm':
-        out += p.hh < 12 ? t.text.slice(0, 2).toUpperCase() : t.text.slice(3).toUpperCase()
+        if (zh) out += p.hh < 12 ? '上午' : '下午'
+        else out += p.hh < 12 ? t.text.slice(0, 2).toUpperCase() : t.text.slice(3).toUpperCase()
         break
       case 'ap':
-        out += p.hh < 12 ? 'A' : 'P'
+        if (zh) out += p.hh < 12 ? '上午' : '下午'
+        else out += p.hh < 12 ? 'A' : 'P'
         break
       case 'eh':
         out += pad(Math.floor(totalSec / 3600), t.count)
@@ -1416,8 +1446,11 @@ function flattenFormatSection(section: string): FlatSection {
     if (ch === '[') {
       const end = section.indexOf(']', i)
       const inner = end < 0 ? '' : section.slice(i + 1, end)
-      const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
-      if (currency) put(currency, true)
+      // `[$-804]` = locale 前缀（不是货币）：不产生任何字面量
+      if (!/^\$-[0-9A-Fa-f]+$/.test(inner)) {
+        const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
+        if (currency) put(currency, true)
+      }
       i = end < 0 ? section.length : end + 1
       continue
     }
@@ -1450,6 +1483,8 @@ interface SciPattern {
   expSignAlways: boolean
   /** 指数最少几位（格式里 `0` 的个数，至少 1） */
   expDigits: number
+  /** 工程格式（尾数整数位 ≥2 个槽，如 `##0.0E+0`）：指数取 3 的倍数 */
+  engineering: boolean
   suffix: string
 }
 
@@ -1473,6 +1508,7 @@ function parseScientificPattern(section: string): SciPattern | null {
     mid: text.slice(core.index + core[0].length, eIdx),
     expSignAlways: m[2] === '+',
     expDigits: Math.max(1, zeros),
+    engineering: (intPat.match(/[#0?]/g) ?? []).length >= 2,
     suffix: text.slice(eIdx + m[0].length)
   }
 }
@@ -1495,11 +1531,17 @@ function renderScientific(value: number, section: string, autoMinus: boolean): s
       mant *= 10
       exp -= 1
     }
+    // 工程格式（`##0.0E+0`）：指数向下取到 3 的倍数，尾数落在 [1, 1000)
+    if (pat.engineering) {
+      exp = Math.floor(exp / 3) * 3
+      mant = abs / Math.pow(10, exp)
+    }
   }
   const decimals = pat.decPat.length
   let mantRounded = Number(mant.toFixed(decimals))
   // 尾数四舍五入进位到 10（9.999 → 10.00）→ 尾数归 1、指数加 1
-  if (Math.abs(mantRounded) >= 10) {
+  // 工程格式的尾数落在 [1, 1000)，不能按 10 归一（否则 12.3E+3 会被压回 1.2E+4）
+  if (!pat.engineering && Math.abs(mantRounded) >= 10) {
     mantRounded = mantRounded / 10
     exp += 1
   }
@@ -1679,6 +1721,9 @@ interface NumberPattern {
 /**
  * 格式段 → 数值占位段（前置/后置字面量、小数位、千分位、百分比、缩进千位）。
  * 不支持的（科学计数法、分数、文本 @）返回 null → 调用方保留原值。
+ *
+ * 占位段在**掩码串**上定位（字面量位置已挖空）—— 这样「字面量里的数字 / 逗号 / 句点」
+ * 不会被误当成数值占位（`"12"0.00` 的 12 是字面量，不是占位段的一部分）。
  */
 function parseNumberPattern(section: string, autoMinus: boolean): NumberPattern | null {
   const { text: flat, masked } = flattenFormatSection(section)
@@ -1687,32 +1732,88 @@ function parseNumberPattern(section: string, autoMinus: boolean): NumberPattern 
   // 这类交给专用渲染器；这里解析不了就保留原值，不硬解成普通数字
   if (/[Ee]/.test(masked) || masked.includes('/')) return null
 
-  const core = /[#0?][#0?,]*(?:\.[#0?]+)?/.exec(flat)
-  if (!core) return null
-  const prefix = flat.slice(0, core.index)
-  const suffix = flat.slice(core.index + core[0].length)
-  let intPattern = core[0]
-  let decPattern = ''
-  const dot = intPattern.indexOf('.')
-  if (dot >= 0) {
-    decPattern = intPattern.slice(dot + 1)
-    intPattern = intPattern.slice(0, dot)
+  // 扫出数值占位段：数字槽（#0?）、逗号（千分位或缩放）、小数点
+  const start = masked.search(/[#0?]/)
+  if (start < 0) return null
+  let end = start
+  let seenDot = false
+  while (end < masked.length) {
+    const ch = masked[end]
+    if (ch === '#' || ch === '0' || ch === '?') {
+      end++
+      continue
+    }
+    if (ch === ',') {
+      end++
+      continue
+    }
+    if (ch === '.' && !seenDot) {
+      seenDot = true
+      end++
+      continue
+    }
+    break
   }
-  const scaleCommas = intPattern.length - intPattern.replace(/,+$/, '').length
-  intPattern = intPattern.slice(0, intPattern.length - scaleCommas)
+  const core = masked.slice(start, end)
+
+  // 占位段末尾的逗号 = 缩放逗号（每个逗号除以 1000）；整数位中间的逗号 = 千分位
+  let scale = 0
+  let body = core
+  while (body.endsWith(',')) {
+    scale++
+    body = body.slice(0, -1)
+  }
+  const dot = body.indexOf('.')
+  const intPattern = dot >= 0 ? body.slice(0, dot) : body
+  const decPattern = dot >= 0 ? body.slice(dot + 1) : ''
+
   const grouping = intPattern.includes(',')
-  intPattern = intPattern.replace(/,/g, '')
   if (!/[#0?]/.test(intPattern + decPattern)) return null
   return {
-    prefix,
-    suffix,
+    prefix: flat.slice(0, start),
+    suffix: flat.slice(end),
     intPattern,
     decPattern,
-    percent: (flat.match(/%/g) ?? []).length,
-    scale: scaleCommas,
+    percent: (masked.match(/%/g) ?? []).length,
+    scale,
     grouping,
     autoMinus
   }
+}
+
+/** 千分位分组（1234567 → 1,234,567） */
+function groupThousands(digits: string): string {
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+/**
+ * 整数位按占位槽渲染（照搬 Excel 的槽位语义）：
+ *   - 数字右对齐填进最右边的槽；槽位不够就把数字原样多出来（不截断）；
+ *   - 空着的槽：`0` 槽显示 0、`#` 槽不显示、`?` 槽显示空格。
+ * `zeroValue` 为真时，整数位的 0 不占 `?` 槽 —— Excel 会计格式零段
+ * `_($* "-"??_)` 就是靠这个只出横线、不出「0」。
+ */
+function renderIntSlots(intPattern: string, digits: string, grouping: boolean, zeroValue: boolean): string {
+  const slots = [...intPattern].filter((c) => c === '#' || c === '0' || c === '?')
+  const effective = zeroValue && digits === '0' && !intPattern.includes('0') ? '' : digits
+  const grouped = grouping && effective.length > 3 ? groupThousands(effective) : effective
+  if (slots.length === 0 || effective.length > slots.length) return grouped
+  const offset = slots.length - effective.length
+  let out = ''
+  let gi = 0
+  for (let i = 0; i < slots.length; i++) {
+    if (i < offset) {
+      out += slots[i] === '0' ? '0' : slots[i] === '?' ? ' ' : ''
+      continue
+    }
+    while (gi < grouped.length && grouped[gi] === ',') {
+      out += ','
+      gi++
+    }
+    out += grouped[gi] ?? ''
+    gi++
+  }
+  return out
 }
 
 /** 按数值正负/零选格式段（第 1/2/3 段；没有对应段时退回第 1 段） */
@@ -1751,13 +1852,8 @@ function renderNumberCode(num: number, code: string): string | null {
   // 可选小数位：`#` 去掉尾零，`?` 去掉后补空格
   fracPart = trimDecSlots(fracPart, pattern.decPattern)
 
-  const minInt = (pattern.intPattern.match(/0/g) ?? []).length
-  intPart = intPart.padStart(minInt, '0')
-  if (pattern.grouping && intPart.length > 3) {
-    const sign = intPart.startsWith('-') ? '-' : ''
-    const digits = sign ? intPart.slice(1) : intPart
-    intPart = sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-  }
+  // 整数位：0 槽补零 / ? 槽补空格 / # 槽不显示；数字右对齐填槽
+  intPart = renderIntSlots(pattern.intPattern, intPart, pattern.grouping, value === 0)
 
   const body = fracPart ? `${intPart}.${fracPart}` : intPart
   return `${pattern.autoMinus ? '-' : ''}${pattern.prefix}${body}${pattern.suffix}`
