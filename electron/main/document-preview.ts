@@ -1209,6 +1209,308 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
 }
 
 /** 数字格式码里的一个数值占位段 */
+/* ------------------------------ 格式段摊平（结构 vs 字面量） ------------------------------ */
+
+/** 掩码符：摊平时把字面量字符替换成它，用来区分「结构字符」和「字面量字符」 */
+const LITERAL_MASK = '\u0001'
+
+interface FlatSection {
+  /** 摊平后的文本：字面量内容保留，引号/转义符/填充符去掉 */
+  text: string
+  /** 与 text 等长的掩码串：字面量位置是 LITERAL_MASK，结构位原样 */
+  masked: string
+}
+
+/**
+ * 格式段摊平。
+ * 除了文本（沿用原口径：引号内容保留、`\` 取后一位、`_` 记一个空格、`*` 丢弃、
+ * `[...]` 只留货币符号），还产出等长掩码串。
+ * 没有掩码就分不清 `"E"0.00`（字面量 E）和 `0.00E+00`（科学计数法）、
+ * `"a/b"0.00`（字面量斜杠）和 `# ?/?`（分数格式）—— 掩码把字面量位置挖空。
+ */
+function flattenFormatSection(section: string): FlatSection {
+  let text = ''
+  let masked = ''
+  const put = (s: string, literal: boolean): void => {
+    text += s
+    for (const ch of s) masked += literal ? LITERAL_MASK : ch
+  }
+  let i = 0
+  while (i < section.length) {
+    const ch = section[i]
+    if (ch === '"') {
+      const end = section.indexOf('"', i + 1)
+      const stop = end < 0 ? section.length : end + 1
+      put(section.slice(i + 1, stop - 1), true)
+      i = stop
+      continue
+    }
+    if (ch === '\\') {
+      put(section[i + 1] ?? '', true)
+      i += 2
+      continue
+    }
+    if (ch === '_') {
+      put(' ', true)
+      i += 2
+      continue
+    }
+    if (ch === '*') {
+      i += 2
+      continue
+    }
+    if (ch === '[') {
+      const end = section.indexOf(']', i)
+      const inner = end < 0 ? '' : section.slice(i + 1, end)
+      const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
+      if (currency) put(currency, true)
+      i = end < 0 ? section.length : end + 1
+      continue
+    }
+    put(ch, false)
+    i++
+  }
+  return { text, masked }
+}
+
+/** 小数位槽位收尾：`#` 去掉尾零、`?` 换成空格再截掉（与既有数字渲染同口径） */
+function trimDecSlots(fracPart: string, decPat: string): string {
+  let out = fracPart
+  for (let k = out.length - 1; k >= 0; k--) {
+    const spec = decPat[k]
+    if (spec === '0') break
+    if (out[k] !== '0') break
+    out = out.slice(0, k) + (spec === '?' ? ' ' : '')
+  }
+  return out.replace(/ +$/, '')
+}
+
+/* ------------------------------ 科学计数法 ------------------------------ */
+
+interface SciPattern {
+  prefix: string
+  intPat: string
+  decPat: string
+  mid: string
+  /** 格式里写的是 `E+` → 正指数也带 `+` 号；`E` / `E-` → 只有负指数带号 */
+  expSignAlways: boolean
+  /** 指数最少几位（格式里 `0` 的个数，至少 1） */
+  expDigits: number
+  suffix: string
+}
+
+/** 格式段 → 科学计数法模板；不是科学计数法返回 null */
+function parseScientificPattern(section: string): SciPattern | null {
+  const { text, masked } = flattenFormatSection(section)
+  const eIdx = masked.search(/[Ee]/)
+  if (eIdx < 0) return null
+  const m = /^([Ee])([+-]?)([#0?]*)/.exec(masked.slice(eIdx))
+  if (!m) return null
+  const core = /[#0?][#0?,]*(?:\.[#0?]+)?/.exec(masked.slice(0, eIdx))
+  if (!core) return null
+  const dot = core[0].indexOf('.')
+  const intPat = dot >= 0 ? core[0].slice(0, dot) : core[0]
+  const decPat = dot >= 0 ? core[0].slice(dot + 1) : ''
+  const zeros = (m[3].match(/0/g) ?? []).length
+  return {
+    prefix: text.slice(0, core.index),
+    intPat,
+    decPat,
+    mid: text.slice(core.index + core[0].length, eIdx),
+    expSignAlways: m[2] === '+',
+    expDigits: Math.max(1, zeros),
+    suffix: text.slice(eIdx + m[0].length)
+  }
+}
+
+/** 科学计数法渲染：`0.00E+00` → `1.23E+04`；不支持的返回 null（调用方保留原值） */
+function renderScientific(value: number, section: string, autoMinus: boolean): string | null {
+  const pat = parseScientificPattern(section)
+  if (!pat) return null
+  const abs = Math.abs(value)
+  let exp = 0
+  let mant = abs
+  if (abs !== 0) {
+    exp = Math.floor(Math.log10(abs))
+    mant = abs / Math.pow(10, exp)
+    // log10 的浮点误差可能把尾数甩到 [0.1,1) 或 [10,100)：纠正一次
+    if (mant >= 10) {
+      mant /= 10
+      exp += 1
+    } else if (mant < 1) {
+      mant *= 10
+      exp -= 1
+    }
+  }
+  const decimals = pat.decPat.length
+  let mantRounded = Number(mant.toFixed(decimals))
+  // 尾数四舍五入进位到 10（9.999 → 10.00）→ 尾数归 1、指数加 1
+  if (Math.abs(mantRounded) >= 10) {
+    mantRounded = mantRounded / 10
+    exp += 1
+  }
+  const fixed = mantRounded.toFixed(decimals)
+  const dot = fixed.indexOf('.')
+  let intPart = dot >= 0 ? fixed.slice(0, dot) : fixed
+  const fracPart = dot >= 0 ? trimDecSlots(fixed.slice(dot + 1), pat.decPat) : ''
+  intPart = intPart.padStart((pat.intPat.match(/0/g) ?? []).length, '0')
+  const body = fracPart ? `${intPart}.${fracPart}` : intPart
+  const expText = String(Math.abs(exp)).padStart(pat.expDigits, '0')
+  const sign = exp < 0 ? '-' : pat.expSignAlways ? '+' : ''
+  return `${autoMinus ? '-' : ''}${pat.prefix}${body}${pat.mid}E${sign}${expText}${pat.suffix}`
+}
+
+/* ------------------------------ 分数 ------------------------------ */
+
+interface FractionPattern {
+  prefix: string
+  intPat: string
+  sep: string
+  numPat: string
+  denPat: string
+  /** 固定分母（`# ?/4` 里的 4）；null = 分母由槽位决定 */
+  denFixed: number | null
+  suffix: string
+}
+
+/** 格式段 → 分数模板；不是分数格式返回 null */
+function parseFractionPattern(section: string): FractionPattern | null {
+  const { text, masked } = flattenFormatSection(section)
+  const slashIdx = masked.indexOf('/')
+  if (slashIdx < 0) return null
+  const leftMasked = masked.slice(0, slashIdx)
+  // 分子 = 紧贴斜杠左侧的那段占位符
+  const numMatch = /([#0?]+)$/.exec(leftMasked)
+  if (!numMatch) return null
+  const numStart = numMatch.index
+  const headOnly = leftMasked.slice(0, numStart)
+  // 整数位 = 更靠左的第一段占位符（`# ?/?` 里的 `#`）
+  const intMatch = /([#0?][#0?,]*)/.exec(headOnly)
+  const intPat = intMatch ? intMatch[1] : ''
+  const intEnd = intMatch ? intMatch.index + intMatch[0].length : 0
+  const rightMasked = masked.slice(slashIdx + 1)
+  const denMatch = /^[#0?]+/.exec(rightMasked)
+  let denPat = ''
+  let denFixed: number | null = null
+  let denLen = 0
+  if (denMatch) {
+    denPat = denMatch[0]
+    denLen = denPat.length
+  } else {
+    // `# ?/4` 这种固定分母
+    const fixedMatch = /^\d+/.exec(text.slice(slashIdx + 1))
+    if (!fixedMatch) return null
+    denFixed = Number(fixedMatch[0])
+    denLen = fixedMatch[0].length
+    if (!Number.isFinite(denFixed) || denFixed < 1) return null
+  }
+  return {
+    prefix: text.slice(0, intMatch ? intMatch.index : numStart),
+    intPat,
+    sep: text.slice(intEnd, numStart),
+    numPat: numMatch[1],
+    denPat,
+    denFixed,
+    suffix: text.slice(slashIdx + 1 + denLen)
+  }
+}
+
+/**
+ * 最佳有理逼近（连分数收敛分数）。
+ * Excel 的分数格式取法：取「分母不超过槽位上限」的最后一个收敛分数。
+ * 不能简单就近取整 —— 那会把 0.3 取成 2/7，而 Excel 给 1/3。
+ */
+function bestFraction(x: number, maxNum: number, maxDen: number): { num: number; den: number } | null {
+  if (!Number.isFinite(x) || x < 0) return null
+  if (x === 0) return { num: 0, den: 1 }
+  if (maxNum < 1 || maxDen < 1) return null
+  let pPrev = 0
+  let qPrev = 1
+  let pCur = 1
+  let qCur = 0
+  let v = x
+  let best: { num: number; den: number } | null = null
+  for (let i = 0; i < 64; i++) {
+    const a = Math.floor(v)
+    if (!Number.isFinite(a)) break
+    const pNext = a * pCur + pPrev
+    const qNext = a * qCur + qPrev
+    pPrev = pCur
+    qPrev = qCur
+    pCur = pNext
+    qCur = qNext
+    if (qCur > maxDen) break
+    if (pCur > maxNum) break
+    best = { num: pCur, den: qCur }
+    const frac = v - a
+    if (frac <= 1e-12) break
+    v = 1 / frac
+    if (!Number.isFinite(v)) break
+  }
+  if (best) return best
+  // 收敛分数超限（分子放不下）→ 退一步：在分子/分母都不超上限的前提下就近取
+  let fallback: { num: number; den: number } | null = null
+  let fallbackErr = Infinity
+  for (let d = 1; d <= maxDen; d++) {
+    const n = Math.round(x * d)
+    if (n > maxNum) continue
+    const err = Math.abs(x - n / d)
+    if (err < fallbackErr - 1e-12) {
+      fallbackErr = err
+      fallback = { num: n, den: d }
+    }
+  }
+  return fallback
+}
+
+/** 整数位按占位符渲染（`0` 补零、`,` 千分位） */
+function formatInt(value: number, intPat: string): string {
+  let out = String(Math.trunc(value))
+  out = out.padStart((intPat.match(/0/g) ?? []).length, '0')
+  if (intPat.includes(',')) out = out.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return out
+}
+
+/** 分数渲染：`# ?/?` → `2 1/2`；不支持的返回 null（调用方保留原值） */
+function renderFraction(value: number, section: string, autoMinus: boolean): string | null {
+  const pat = parseFractionPattern(section)
+  if (!pat) return null
+  const abs = Math.abs(value)
+  const hasInt = /[#0?]/.test(pat.intPat)
+  let intVal = 0
+  let fracVal = abs
+  if (hasInt) {
+    intVal = Math.floor(abs)
+    fracVal = abs - intVal
+  }
+  let num = 0
+  let den = 1
+  if (pat.denFixed !== null) {
+    den = pat.denFixed
+    num = Math.round(fracVal * den)
+  } else {
+    const maxNum = Math.pow(10, pat.numPat.length) - 1
+    const maxDen = Math.pow(10, pat.denPat.length) - 1
+    const best = bestFraction(fracVal, maxNum, maxDen)
+    if (!best) return null
+    num = best.num
+    den = best.den
+  }
+  // 小数部分被四舍五入成了 1（2.999 → 4/4）→ 进位到整数
+  if (num === den) {
+    intVal += 1
+    num = 0
+  }
+  const sign = autoMinus ? '-' : ''
+  if (num === 0) {
+    if (!hasInt) return `${sign}${pat.prefix}0${pat.suffix}`
+    return `${sign}${pat.prefix}${formatInt(intVal, pat.intPat)}${pat.suffix}`
+  }
+  const fracText = `${num}/${den}`
+  if (!hasInt) return `${sign}${pat.prefix}${fracText}${pat.suffix}`
+  return `${sign}${pat.prefix}${formatInt(intVal, pat.intPat)}${pat.sep}${fracText}${pat.suffix}`
+}
+
 interface NumberPattern {
   prefix: string
   suffix: string
@@ -1225,43 +1527,11 @@ interface NumberPattern {
  * 不支持的（科学计数法、分数、文本 @）返回 null → 调用方保留原值。
  */
 function parseNumberPattern(section: string, autoMinus: boolean): NumberPattern | null {
-  let flat = ''
-  let i = 0
-  while (i < section.length) {
-    const ch = section[i]
-    if (ch === '"') {
-      const end = section.indexOf('"', i + 1)
-      const stop = end < 0 ? section.length : end + 1
-      flat += section.slice(i + 1, stop - 1)
-      i = stop
-      continue
-    }
-    if (ch === '\\') {
-      flat += section[i + 1] ?? ''
-      i += 2
-      continue
-    }
-    if (ch === '_') {
-      flat += ' '
-      i += 2
-      continue
-    }
-    if (ch === '*') {
-      i += 2
-      continue
-    }
-    if (ch === '[') {
-      const end = section.indexOf(']', i)
-      const inner = end < 0 ? '' : section.slice(i + 1, end)
-      const currency = /^\$([^\]-]*)/.exec(inner)?.[1]
-      if (currency) flat += currency
-      i = end < 0 ? section.length : end + 1
-      continue
-    }
-    flat += ch
-    i++
-  }
+  const { text: flat, masked } = flattenFormatSection(section)
   if (/[Ee][+-]/i.test(flat) || flat.includes('/') || flat.includes('@')) return null
+  // 掩码位上还留着 E 或「/」= 科学计数法 / 分数格式（字面量里的 E、斜杠已被挖空）→
+  // 这类交给专用渲染器；这里解析不了就保留原值，不硬解成普通数字
+  if (/[Ee]/.test(masked) || masked.includes('/')) return null
 
   const core = /[#0?][#0?,]*(?:\.[#0?]+)?/.exec(flat)
   if (!core) return null
@@ -1309,6 +1579,12 @@ function renderNumberCode(num: number, code: string): string | null {
     value = Math.abs(num)
     autoMinus = sections.length < 2
   }
+  // 科学计数法 / 分数：先走专用渲染器，解析不了才落到普通数字
+  const sci = renderScientific(value, section, autoMinus)
+  if (sci !== null) return sci
+  const frac = renderFraction(value, section, autoMinus)
+  if (frac !== null) return frac
+
   const pattern = parseNumberPattern(section, autoMinus)
   if (!pattern) return null
 
@@ -1319,13 +1595,7 @@ function renderNumberCode(num: number, code: string): string | null {
   let fracPart = decimals > 0 ? fixed.split('.')[1] ?? '' : ''
 
   // 可选小数位：`#` 去掉尾零，`?` 去掉后补空格
-  for (let k = fracPart.length - 1; k >= 0; k--) {
-    const spec = pattern.decPattern[k]
-    if (spec === '0') break
-    if (fracPart[k] !== '0') break
-    fracPart = fracPart.slice(0, k) + (spec === '?' ? ' ' : '')
-  }
-  fracPart = fracPart.replace(/ +$/, '')
+  fracPart = trimDecSlots(fracPart, pattern.decPattern)
 
   const minInt = (pattern.intPattern.match(/0/g) ?? []).length
   intPart = intPart.padStart(minInt, '0')
