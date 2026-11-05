@@ -6,10 +6,10 @@
 > 无颜色时输出与旧版**一字不差**。工具数仍 **27**，无新增依赖。
 > `phase4c-e2e.cjs` **26/26**、秒级自测 **20/20**；全量回归 **run60 十五套 472/472**。
 >
-> **本轮状态**：代码 / typecheck / build / e2e / 全量回归均已就绪；**全部未 commit**。
-> 用户本轮（2026-11-05）明确要求 commit，但项目此前**从未初始化 git**（不是 git 仓库），
-> 且编写本文档的会话已撞 ctx-budget-guard **160K 硬闸门**（Bash 被拦）——
-> **commit 移交新会话执行**，执行前先向用户确认 `git init`。提交清单与 message 见 §9。
+> **本轮状态**：代码 / typecheck / build / e2e / 全量回归均已就绪，**已提交**。
+> 项目此前从未纳入版本控制；本轮（2026-11-05）按用户要求执行 `git init`，
+> 首个提交 **`f5c1da4`** `chore: initial import of ecclaw source tree`（133 files / 30,230 insertions），
+> 工作区干净。提交范围与忽略规则见 §9。
 
 ---
 
@@ -131,10 +131,12 @@ node C:/Temp/ecclaw-verify/rerun-and-regress11.cjs   # run60-*
 
 ---
 
-## 9. 提交计划（待执行 · 新会话）
+## 9. 提交记录（已完成 · 2026-11-05）
 
-**前置**：`F:\soft\00selfmade\ecclaw` **不是 git 仓库**。commit 前必须先 `git init`；
-按 §7，这一步要**先问用户一句**再执行（上一阶段明确禁过）。
+**结果**：`git init` 已执行，首个提交 **`f5c1da4`**
+`chore: initial import of ecclaw source tree`（133 files / 30,230 insertions），工作区干净。
+`.gitignore` 已按下方内容创建。后续阶段在此基础上增量提交。
+（提交前原计划只加 5 个文件；因仓库是首次初始化，改为整树导入，否则 `git diff` 无基线可对。）
 
 **先写 `.gitignore`**（严禁 `git add -A`）：
 
