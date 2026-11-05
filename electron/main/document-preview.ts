@@ -336,6 +336,355 @@ function docxParagraphText(paragraph: string): string {
   return out.join('')
 }
 
+/* ---------------------- DOCX 结构：标题 / 列表 / 富文本 / 页眉脚注 ---------------------- */
+
+const DOCX_STYLES_ENTRY = 'word/styles.xml'
+const DOCX_NUMBERING_ENTRY = 'word/numbering.xml'
+const DOCX_FOOTNOTES_ENTRY = 'word/footnotes.xml'
+const DOCX_HEADER_RE = /^word\/header\d*\.xml$/
+const DOCX_FOOTER_RE = /^word\/footer\d*\.xml$/
+
+/** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注 + 页眉页脚 */
+interface DocxParts {
+  document: string
+  styles: string
+  numbering: string
+  footnotes: string
+  headers: string[]
+  footers: string[]
+}
+
+/** 缩进哨兵：归一化会把连续空格压成一个，所以先用哨兵占位，最后再还原成空格 */
+const DOCX_INDENT = '\u0000'
+
+interface DocxStyleInfo {
+  name: string
+  /** 标题级别（1~9）；不是标题为 null */
+  headingLevel: number | null
+}
+
+/** 样式名 → 标题级别：认「heading 1」「标题 1」（Word 中文版样式名） */
+function headingLevelFromStyleName(name: string): number | null {
+  const m = /^(?:heading|标题)\s*(\d{1,2})$/i.exec(name.trim())
+  if (!m) return null
+  const lv = Number(m[1])
+  return lv >= 1 && lv <= 9 ? lv : null
+}
+
+/** styles.xml → styleId → { 名称, 标题级别 } */
+function parseDocxStyles(xml: string): Map<string, DocxStyleInfo> {
+  const map = new Map<string, DocxStyleInfo>()
+  if (!xml) return map
+  for (const m of xml.matchAll(/<w:style\b[^>]*>([\s\S]*?)<\/w:style>/g)) {
+    const styleId = /\bw:styleId="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    if (!styleId) continue
+    const body = m[1]
+    const name = decodeXmlEntities(/\bw:name\b[^>]*\bw:val="([^"]*)"/.exec(body)?.[1] ?? '')
+    const outline = Number(/<w:outlineLvl\b[^>]*\bw:val="(\d+)"/.exec(body)?.[1] ?? Number.NaN)
+    const level = Number.isFinite(outline) ? outline + 1 : headingLevelFromStyleName(name)
+    map.set(styleId, { name, headingLevel: level })
+  }
+  return map
+}
+
+interface DocxNumLevel {
+  numFmt: string
+  lvlText: string
+  start: number
+}
+
+interface DocxNumbering {
+  /** numId → abstractNumId */
+  nums: Map<string, string>
+  /** abstractNumId → ilvl → 级别定义 */
+  levels: Map<string, Map<number, DocxNumLevel>>
+}
+
+/** numbering.xml → 编号定义 */
+function parseDocxNumbering(xml: string): DocxNumbering {
+  const nums = new Map<string, string>()
+  const levels = new Map<string, Map<number, DocxNumLevel>>()
+  if (!xml) return { nums, levels }
+  for (const m of xml.matchAll(/<w:abstractNum\b[^>]*>([\s\S]*?)<\/w:abstractNum>/g)) {
+    const absId = /\bw:abstractNumId="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    if (!absId) continue
+    const lv = new Map<number, DocxNumLevel>()
+    for (const lm of m[1].matchAll(/<w:lvl\b[^>]*>([\s\S]*?)<\/w:lvl>/g)) {
+      const ilvl = Number(/\bw:ilvl="(\d+)"/.exec(lm[0])?.[1] ?? Number.NaN)
+      if (!Number.isFinite(ilvl)) continue
+      const body = lm[1]
+      const start = Number(/\bw:start\b[^>]*\bw:val="(\d+)"/.exec(body)?.[1] ?? '1')
+      lv.set(ilvl, {
+        numFmt: /\bw:numFmt\b[^>]*\bw:val="([^"]*)"/.exec(body)?.[1] ?? 'decimal',
+        lvlText: decodeXmlEntities(/\bw:lvlText\b[^>]*\bw:val="([^"]*)"/.exec(body)?.[1] ?? ''),
+        start: Number.isFinite(start) && start > 0 ? start : 1
+      })
+    }
+    levels.set(absId, lv)
+  }
+  for (const m of xml.matchAll(/<w:num\b[^>]*>([\s\S]*?)<\/w:num>/g)) {
+    const numId = /\bw:numId="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    const absId = /\bw:abstractNumId\b[^>]*\bw:val="([^"]*)"/.exec(m[1])?.[1] ?? ''
+    if (numId && absId) nums.set(numId, absId)
+  }
+  return { nums, levels }
+}
+
+/** 26 → z，27 → aa */
+function toAlpha(value: number): string {
+  let n = Math.max(1, Math.floor(value))
+  let out = ''
+  while (n > 0) {
+    const rest = (n - 1) % 26
+    out = String.fromCharCode(65 + rest) + out
+    n = Math.floor((n - 1) / 26)
+  }
+  return out
+}
+
+const ROMAN_TABLE: Array<[number, string]> = [
+  [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'],
+  [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']
+]
+
+/** 4 → iv（罗马数字上限 3999） */
+function toRoman(value: number): string {
+  let n = Math.floor(value)
+  if (!Number.isFinite(n) || n < 1 || n > 3999) return String(value)
+  let out = ''
+  for (const [num, sym] of ROMAN_TABLE) {
+    while (n >= num) {
+      out += sym
+      n -= num
+    }
+  }
+  return out
+}
+
+const CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+
+/** 中文数字（1~9999），用于 chineseCounting 一类的编号格式 */
+function toChineseNumber(value: number): string {
+  const n = Math.floor(value)
+  if (!Number.isFinite(n) || n < 1) return String(value)
+  if (n < 10) return CN_DIGITS[n]
+  if (n < 20) return '十' + (n % 10 ? CN_DIGITS[n % 10] : '')
+  if (n < 100) {
+    const t = Math.floor(n / 10)
+    const o = n % 10
+    return CN_DIGITS[t] + '十' + (o ? CN_DIGITS[o] : '')
+  }
+  if (n < 1000) {
+    const h = Math.floor(n / 100)
+    const rest = n % 100
+    if (rest === 0) return CN_DIGITS[h] + '百'
+    return CN_DIGITS[h] + '百' + (rest < 10 ? '零' + CN_DIGITS[rest] : toChineseNumber(rest))
+  }
+  const k = Math.floor(n / 1000)
+  const rest = n % 1000
+  if (rest === 0) return CN_DIGITS[k] + '千'
+  return CN_DIGITS[k] + '千' + (rest < 100 ? '零' + toChineseNumber(rest) : toChineseNumber(rest))
+}
+
+/** 编号格式 → 编号文本 */
+function formatListNumber(value: number, numFmt: string): string {
+  switch (numFmt) {
+    case 'lowerLetter':
+      return toAlpha(value).toLowerCase()
+    case 'upperLetter':
+      return toAlpha(value)
+    case 'lowerRoman':
+      return toRoman(value).toLowerCase()
+    case 'upperRoman':
+      return toRoman(value)
+    case 'chineseCounting':
+    case 'chineseCountingThousand':
+    case 'ideographTraditional':
+      return toChineseNumber(value)
+    case 'none':
+      return ''
+    default:
+      return String(value)
+  }
+}
+
+/** 渲染一个列表项的编号文本（按 lvlText 模板替换 %1/%2…），并推进该 numId 的计数器 */
+function docxListLabel(
+  numbering: DocxNumbering,
+  numId: string,
+  ilvl: number,
+  counters: Map<string, number[]>
+): string {
+  const absId = numbering.nums.get(numId)
+  const lvls = absId ? numbering.levels.get(absId) : undefined
+  const lvl = lvls?.get(ilvl)
+  if (!lvl) return ''
+  const cs = counters.get(numId) ?? []
+  while (cs.length < ilvl) cs.push(0)
+  // 本级 +1（首次从 start 开始），更深层级清零
+  cs[ilvl] = (cs[ilvl] ?? lvl.start - 1) + 1
+  cs.length = ilvl + 1
+  counters.set(numId, cs)
+  const template = lvl.lvlText || (lvl.numFmt === 'bullet' ? '•' : '%1.')
+  if (lvl.numFmt === 'bullet') return template
+  return template.replace(/%(\d)/g, (_m, d: string) => {
+    const idx = Number(d) - 1
+    const fmt = lvls?.get(idx)?.numFmt ?? 'decimal'
+    return formatListNumber(cs[idx] ?? 0, fmt)
+  })
+}
+
+interface DocxParaProps {
+  headingLevel: number | null
+  numId: string
+  ilvl: number
+}
+
+/** 段落属性：标题级别 / 列表编号（只看段落自己的 pPr） */
+function docxParagraphProps(paragraph: string, styles: Map<string, DocxStyleInfo>): DocxParaProps {
+  const pPr = /<w:pPr(?:\s[^>]*)?>([\s\S]*?)<\/w:pPr>/.exec(paragraph)?.[1] ?? ''
+  const styleId = /\bw:pStyle\b[^>]*\bw:val="([^"]*)"/.exec(pPr)?.[1] ?? ''
+  let headingLevel = styles.get(styleId)?.headingLevel ?? null
+  if (headingLevel === null) {
+    const outline = Number(/<w:outlineLvl\b[^>]*\bw:val="(\d+)"/.exec(pPr)?.[1] ?? Number.NaN)
+    if (Number.isFinite(outline)) headingLevel = outline + 1
+  }
+  const numId = /\bw:numId\b[^>]*\bw:val="([^"]*)"/.exec(pPr)?.[1] ?? ''
+  const ilvl = Number(/\bw:ilvl\b[^>]*\bw:val="(\d+)"/.exec(pPr)?.[1] ?? '0')
+  return { headingLevel, numId, ilvl: Number.isFinite(ilvl) && ilvl > 0 ? ilvl : 0 }
+}
+
+interface DocxRun {
+  text: string
+  bold: boolean
+  italic: boolean
+}
+
+/** rPr 里某个开关是否打开（`<w:b/>` 开、`<w:b w:val="0"/>` 关） */
+function docxToggleOn(rPr: string, tag: string): boolean {
+  const m = new RegExp(`<${tag}((?:\\s[^>]*?)?)(/?)>`).exec(rPr)
+  if (!m) return false
+  const val = /\bw:val="([^"]*)"/.exec(m[1] ?? '')?.[1]
+  if (val === undefined) return true
+  return val !== '0' && val !== 'false' && val !== 'off'
+}
+
+/** 段落里的 run（按文档顺序）：文本 + 粗体/斜体标记 + 脚注引用角标 */
+function docxRuns(paragraph: string, footnoteNumbers: Map<string, number>): DocxRun[] {
+  const runs: DocxRun[] = []
+  const re = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g
+  for (const m of paragraph.matchAll(re)) {
+    const body = m[1]
+    const rPr = /<w:rPr(?:\s[^>]*)?>([\s\S]*?)<\/w:rPr>/.exec(body)?.[1] ?? ''
+    const bold = docxToggleOn(rPr, 'w:b')
+    const italic = docxToggleOn(rPr, 'w:i')
+    let text = ''
+    const inner =
+      /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\s*\/>|<w:footnoteReference\b[^>]*\bw:id="(\d+)"[^>]*\/>/g
+    for (const t of body.matchAll(inner)) {
+      if (t[1] !== undefined) text += decodeXmlEntities(t[1])
+      else if (t[2] === 'tab') text += '\t'
+      else if (t[2] !== undefined) text += '\n'
+      else {
+        const num = footnoteNumbers.get(t[3])
+        if (num) text += `[${num}]`
+      }
+    }
+    runs.push({ text, bold, italic })
+  }
+  return runs
+}
+
+/** run 序列 → 文本（粗体 `**x**`、斜体 `*x*`、粗斜体 `***x***`） */
+function docxRunsText(runs: DocxRun[]): string {
+  const parts: string[] = []
+  let i = 0
+  while (i < runs.length) {
+    const head = runs[i]
+    let text = head.text
+    let j = i + 1
+    while (j < runs.length && runs[j].bold === head.bold && runs[j].italic === head.italic) {
+      text += runs[j].text
+      j++
+    }
+    if (text) {
+      if (head.bold && head.italic) parts.push(`***${text}***`)
+      else if (head.bold) parts.push(`**${text}**`)
+      else if (head.italic) parts.push(`*${text}*`)
+      else parts.push(text)
+    }
+    i = j
+  }
+  return parts.join('')
+}
+
+/** DOCX 渲染上下文（样式表 / 编号表 / 计数器 / 脚注序号） */
+interface DocxRenderCtx {
+  styles: Map<string, DocxStyleInfo>
+  numbering: DocxNumbering
+  counters: Map<string, number[]>
+  footnoteNumbers: Map<string, number>
+}
+
+/**
+ * 段落 → 文本。
+ * structure=true 时带结构标记：标题 `#`~`######`、列表项编号（真实多级编号 + 缩进）。
+ */
+function renderDocxParagraph(
+  paragraph: string,
+  ctx: DocxRenderCtx,
+  structure: boolean
+): string {
+  const props = docxParagraphProps(paragraph, ctx.styles)
+  const text = docxRunsText(docxRuns(paragraph, ctx.footnoteNumbers))
+  if (!text.trim()) return ''
+  if (!structure) return text.trim()
+  let prefix = ''
+  if (props.headingLevel !== null) {
+    prefix = '#'.repeat(Math.min(props.headingLevel, 6)) + ' '
+  } else if (props.numId) {
+    const label = docxListLabel(ctx.numbering, props.numId, props.ilvl, ctx.counters)
+    if (label) prefix = DOCX_INDENT.repeat(2 * props.ilvl) + label + ' '
+  }
+  return (prefix + text).trim()
+}
+
+/** 脚注引用编号：按正文出现顺序给 1、2、3… */
+function docxFootnoteNumbers(documentXml: string): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const m of documentXml.matchAll(/<w:footnoteReference\b[^>]*\bw:id="(\d+)"/g)) {
+    if (!map.has(m[1])) map.set(m[1], map.size + 1)
+  }
+  return map
+}
+
+/** footnotes.xml → 脚注 id → 正文（分隔符/续行分隔符这类 id ≤ 0 的不要） */
+function parseDocxFootnotes(xml: string): Map<string, string> {
+  const map = new Map<string, string>()
+  if (!xml) return map
+  for (const m of xml.matchAll(/<w:footnote\b[^>]*>([\s\S]*?)<\/w:footnote>/g)) {
+    const id = /\bw:id="(-?\d+)"/.exec(m[0])?.[1] ?? ''
+    if (!id || Number(id) <= 0) continue
+    const paras: string[] = []
+    for (const p of docxChildElements(m[1], ['w:p'])) {
+      const t = docxParagraphText(p.body).trim()
+      if (t) paras.push(t)
+    }
+    if (paras.length > 0) map.set(id, paras.join(' '))
+  }
+  return map
+}
+
+/** 页眉/页脚部件 → 文本行（纯文本，不带结构标记） */
+function docxHeaderLines(xml: string): string[] {
+  const lines: string[] = []
+  for (const p of docxChildElements(xml, ['w:p'])) {
+    const t = docxParagraphText(p.body).trim()
+    if (t) lines.push(t)
+  }
+  return lines
+}
+
 /** DOCX 的结构容器标签：只有这四种标签的嵌套会影响「直接子级」判定 */
 const DOCX_CONTAINER_TAGS = 'w:tbl|w:tr|w:tc|w:p'
 
@@ -396,7 +745,7 @@ function docxChildElements(content: string, wanted: string[]): DocxElement[] {
  * - 自身段落：多段用空格连接（沿用既有口径）；
  * - 内嵌表格：每行占一行，行内各列用 ` | ` 连接（渲染时转义成 `\|`，仍落在同一个外层格子里）。
  */
-function docxCellText(cell: DocxElement): string {
+function docxCellText(cell: DocxElement, ctx: DocxRenderCtx): string {
   const lines: string[] = []
   const own: string[] = []
   const flush = (): void => {
@@ -407,12 +756,12 @@ function docxCellText(cell: DocxElement): string {
   }
   for (const child of docxChildElements(cell.body, ['w:p', 'w:tbl'])) {
     if (child.tag === 'w:p') {
-      const t = docxParagraphText(child.body).trim()
+      const t = renderDocxParagraph(child.body, ctx, false)
       if (t) own.push(t)
     } else {
       flush()
       for (const row of docxChildElements(child.body, ['w:tr'])) {
-        const cells = docxChildElements(row.body, ['w:tc']).map((c) => docxCellText(c))
+        const cells = docxChildElements(row.body, ['w:tc']).map((c) => docxCellText(c, ctx))
         if (cells.length > 0) lines.push(cells.join(' | '))
       }
     }
@@ -448,13 +797,13 @@ function docxCellSpan(cell: DocxElement): number {
  * 单元格里的内嵌表格：Markdown 无法再套一层管道表，按行摊平进所在格子
  * （每行一行、行内列以 ` \| ` 分隔），位置与内容都不丢。
  */
-function docxTableMarkdown(tableXml: string): string {
+function docxTableMarkdown(tableXml: string, ctx: DocxRenderCtx): string {
   const rows: string[][] = []
   for (const row of docxChildElements(tableXml, ['w:tr'])) {
     const cells: string[] = []
     for (const cell of docxChildElements(row.body, ['w:tc'])) {
       const span = docxCellSpan(cell)
-      cells.push(markdownCell(docxCellText(cell)))
+      cells.push(markdownCell(docxCellText(cell, ctx)))
       for (let i = 1; i < span; i++) cells.push('')
     }
     if (cells.length > 0) rows.push(cells)
@@ -471,20 +820,58 @@ function docxTableMarkdown(tableXml: string): string {
   return out.join('\n')
 }
 
-/** word/document.xml → 纯文本（正文段落 + 表格转 Markdown 表格） */
-function extractDocxText(xml: string): string {
+/**
+ * DOCX → 纯文本。
+ * 正文段落 + 表格转 Markdown 表格；标题带 `#`、列表项带真实编号、粗斜体带 `**`/`*`；
+ * 页眉置顶、页脚置底、脚注在正文之后（引用处内联 `[N]`）。
+ */
+function extractDocxText(parts: DocxParts): string {
+  const ctx: DocxRenderCtx = {
+    styles: parseDocxStyles(parts.styles),
+    numbering: parseDocxNumbering(parts.numbering),
+    counters: new Map<string, number[]>(),
+    footnoteNumbers: docxFootnoteNumbers(parts.document)
+  }
+  const footnotes = parseDocxFootnotes(parts.footnotes)
   const blocks: string[] = []
+
+  // 页眉（多个部件可能内容重复，去重）
+  const seen = new Set<string>()
+  for (const line of parts.headers.flatMap((h) => docxHeaderLines(h))) {
+    if (seen.has(line)) continue
+    seen.add(line)
+    blocks.push(`[页眉] ${line}`)
+  }
+
   // 深度感知地按文档顺序取正文里的段落与表格（表格里的段落归表格，不再重复抽）
-  for (const block of docxChildElements(xml, ['w:p', 'w:tbl'])) {
+  for (const block of docxChildElements(parts.document, ['w:p', 'w:tbl'])) {
     if (block.tag === 'w:tbl') {
-      const table = docxTableMarkdown(block.body)
+      const table = docxTableMarkdown(block.body, ctx)
       if (table) blocks.push(table)
     } else {
-      const text = docxParagraphText(block.body).trim()
+      const text = renderDocxParagraph(block.body, ctx, true)
       if (text) blocks.push(text)
     }
   }
-  return normalizeText(blocks.join('\n'))
+
+  // 脚注：按正文引用顺序编号
+  const fnLines: string[] = []
+  for (const [id, num] of [...ctx.footnoteNumbers.entries()].sort((a, b) => a[1] - b[1])) {
+    const text = footnotes.get(id)
+    if (text) fnLines.push(`${num}. ${text}`)
+  }
+  if (fnLines.length > 0) blocks.push('[脚注]', ...fnLines)
+
+  // 页脚
+  const seenFooter = new Set<string>()
+  for (const line of parts.footers.flatMap((f) => docxHeaderLines(f))) {
+    if (seenFooter.has(line)) continue
+    seenFooter.add(line)
+    blocks.push(`[页脚] ${line}`)
+  }
+
+  // 缩进哨兵在归一化之后还原成空格（归一化会把连续空格压成一个）
+  return normalizeText(blocks.join('\n')).replace(/\u0000/g, ' ')
 }
 
 /** 解出 zip 里需要的条目（只解这些条目，且每个条目有解压上限 → 拒 zip 炸弹） */
@@ -493,12 +880,31 @@ function readZipEntries(filePath: string, match: (name: string) => boolean): Rec
   return unzipSync(data, { filter: (f) => match(f.name) && f.originalSize <= MAX_ENTRY_BYTES })
 }
 
-/** 解出 DOCX 的正文 XML（只解 word/document.xml，拒绝 zip 炸弹） */
-function readDocxXml(filePath: string): string {
-  const files = readZipEntries(filePath, (n) => n === DOCX_ENTRY)
+/** 解出 DOCX 要用的部件（正文 + 样式 + 编号 + 脚注 + 页眉页脚，拒绝 zip 炸弹） */
+function readDocxParts(filePath: string): DocxParts {
+  const files = readZipEntries(
+    filePath,
+    (n) =>
+      n === DOCX_ENTRY ||
+      n === DOCX_STYLES_ENTRY ||
+      n === DOCX_NUMBERING_ENTRY ||
+      n === DOCX_FOOTNOTES_ENTRY ||
+      DOCX_HEADER_RE.test(n) ||
+      DOCX_FOOTER_RE.test(n)
+  )
   const entry = files[DOCX_ENTRY]
   if (!entry) throw new Error(`缺少 ${DOCX_ENTRY}，不是有效的 DOCX 文件`)
-  return new TextDecoder('utf-8').decode(entry)
+  const dec = (u: Uint8Array | undefined): string =>
+    u ? new TextDecoder('utf-8').decode(u) : ''
+  const names = Object.keys(files)
+  return {
+    document: dec(entry),
+    styles: dec(files[DOCX_STYLES_ENTRY]),
+    numbering: dec(files[DOCX_NUMBERING_ENTRY]),
+    footnotes: dec(files[DOCX_FOOTNOTES_ENTRY]),
+    headers: names.filter((n) => DOCX_HEADER_RE.test(n)).sort().map((n) => dec(files[n])),
+    footers: names.filter((n) => DOCX_FOOTER_RE.test(n)).sort().map((n) => dec(files[n]))
+  }
 }
 
 /* ------------------------------ PPTX / XLSX 抽取 ------------------------------ */
@@ -2426,7 +2832,7 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     try {
       const text =
         base.kind === 'docx'
-          ? extractDocxText(readDocxXml(resolved))
+          ? extractDocxText(readDocxParts(resolved))
           : base.kind === 'pptx'
             ? extractPptxText(resolved)
             : extractXlsxText(resolved)

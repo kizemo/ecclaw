@@ -185,6 +185,19 @@
 > 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
 > 秒级自测 **47/47**；e2e **53/53**；✅ **全量回归 run67 二十套 681/681 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4i-final-2026-11-05.md`。
+> **第三十五阶段（DOCX 结构保真 · 标题层级 / 多级列表编号 / 粗斜体 / 页眉页脚脚注）已完成并真机验证（`phase4j-e2e.cjs` **39/39** 全绿）**：
+> §5.26 起 DOCX 只能抽出**扁平纯文本**（标题层级、列表编号、强调、页眉页脚全丢），本轮把结构补回来，输出走 Markdown：
+> **标题层级**读 `word/styles.xml` 判定（style 自带 `outlineLvl` 优先，否则从 style 名取数字，认 `heading 1` / `标题 1`）→ `#` ~ `######`；
+> **多级列表编号**读 `word/numbering.xml`（`numId` → `abstractNumId` → `ilvl`），按 `numFmt` 渲染 decimal / 字母 / 罗马 / 中文数字，
+> 按 `lvlText` 的 `%1` / `%2` 槽位拼多级前缀，本级 +1、更深层计数器清零，每级 2 空格缩进；
+> **粗斜体**按 run 级 `w:b` / `w:i` → `**x**` / `*x*` / `***x***`（**表格单元格内同样应用**，标题与列表标记不应用）；
+> **页眉 / 页脚 / 脚注**：页眉置顶 `[页眉] …`、页脚置底 `[页脚] …`、脚注在正文后出 `[脚注]` 块（按引用顺序编号），
+> 正文引用处内联 `[N]`。
+> **本轮再次印证「候选清单会过期」**：开打前探针实测发现上轮候选里「XLSX `expression` 条件格式」是真缺口但价值中、
+> 「文本 `@` 剩余形状」是真缺口但价值低；而 DOCX / PPTX 这条**新轴**上结构丢失最明显 → **改选 DOCX 结构保真**。
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **30/30**；e2e **39/39**；✅ **全量回归 run68 二十二套 720/720 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4j-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -317,6 +330,41 @@
    → 也不能进「非 CJK locale 行」的 CJK 检查。
 8. **上下文 160K 硬闸门会拦 Bash**：本轮上半场就撞上一次（164K 时只放行 Write/Edit）。
    → **写代码前先估「还要读多少」**；长文件读一次后**只引用路径**；大改动前先把设计敲定、少回头读。
+
+## 第三十五阶段（2026-11-06）：DOCX 结构保真（标题层级 / 多级列表编号 / 粗斜体 / 页眉页脚脚注） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 开打前用 `make-phase4j-probe.cjs` / `probe-4j.cjs` / `probe-4j-office.cjs` **实测** phase4i handoff §9 的候选清单 → 「文本 `@` 剩余形状」是真缺口但**价值低**（边角）；「日期 locale 边角」被既有决定排除；「`containsBlanks`」需改空白格输出结构、回归面大；**`expression` 条件格式**（`$E5>40` / `MOD(ROW(),2)=0`）是真缺口但**价值中** → 留作下一轮候选。**新轴实测（DOCX/PPTX）**发现结构丢失最明显（DOCX 标题层级 / 列表编号 / 粗斜体 / 页眉 / 脚注全丢；PPTX 表格被摊平成独立行、备注丢失）→ **本轮改选 DOCX 结构保真**（PPTX 表格 + 备注 = 下一轮候选） |
+| 2 | DOCX 部件一次解出 | ✅ | 新增 `DocxParts` 接口 + `readDocxParts(filePath)`：**替换**原 `readDocxXml()`，一次解出 `word/document.xml` + `styles.xml` + `numbering.xml` + `footnotes.xml` + `header*.xml` + `footer*.xml`（仍走 `fflate`，`MAX_ENTRY_BYTES` 约束不变） |
+| 3 | 标题层级 | ✅ | `parseDocxStyles()` → styleId → 标题级别（style 自带 `outlineLvl` **优先**，否则 `headingLevelFromStyleName()` 从名字取数字，认 `heading N` 与 `标题 N`）；`renderDocxParagraph()` 输出 `#` ~ `######` |
+| 4 | 多级列表编号 | ✅ | `parseDocxNumbering()`：numId → abstractNumId → ilvl → `{numFmt, lvlText, start}`；`formatListNumber()` / `docxListLabel()` 按 `numFmt` 渲染 decimal / lowerLetter / upperLetter / lowerRoman / upperRoman / 中文数字（`toAlpha` / `toRoman` / `toChineseNumber`），按 `lvlText` 的 `%n` 槽位拼多级前缀；本级 +1、更深层计数器清零；缩进每级 2 空格（哨兵 `DOCX_INDENT = '\u0000'` 占位，`normalizeText` 归一化后再还原成空格） |
+| 5 | 粗斜体 | ✅ | `docxRuns()` / `docxRunsText()`：run 级 `w:b` / `w:i` → `**x**` / `*x*` / `***x***`（`docxToggleOn()` 判 `w:val="0"` / `"false"` 关闭态）；**表格单元格内同样应用**（`docxCellText(cell, ctx)`），标题与列表标记不应用 |
+| 6 | 页眉 / 页脚 / 脚注 | ✅ | `docxHeaderLines()` 取 `header*.xml` 段落置顶 `[页眉] …`、`footer*.xml` 置底 `[页脚] …`；`parseDocxFootnotes()` + `docxFootnoteNumbers()` 按**引用顺序**编号，正文引用处内联 `[N]`（`w:footnoteReference` 在 run 内），脚注块在正文后出 `[脚注]` |
+| 7 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` **全不动** → **MCP 工具数仍 27**、仍无必填参数；**无新增依赖**；界面 `DOCX · 文本预览` 标签沿用（`pre` 块保留换行） |
+| 8 | e2e + 回归 | ✅ | `phase4j-selftest.cjs` **30/30**（20 行整行相等 + 行数 + kind + error + 7 条负向断言）；`phase4j-e2e.cjs` **39/39**（工具面 3 · 抽取 23 · 负向 7 · 界面 6；产物 `run68-phase4j.log`）；**全量回归 run68 二十二套 720/720 全绿**（4j 39 · 4i 53 · 4h 48 · 4g 30 · 4f 26 · 4e 21 · 4d 31 · 4c 26 · 4b 18 · 4a 20 · 3z 37 · 3y 31 · 3x 41 · 3w 27 · 3v 29 · 3u 24 · 3t 16 · 3r 31 · 3p 45 · 3o 44 · 3m 69 · sse 14，FAIL 全 0；摘要 `run68-summary.txt`）。未跑真站 phase3s/3q |
+
+第三十五阶段实证发现：
+
+1. **候选清单会过期（第二次印证）**：phase4i handoff §9 的候选里，`expression` 条件格式是真缺口但价值中、
+   文本 `@` 剩余形状是真缺口但价值低；而真正值得做的是**上轮没测过的新轴**（DOCX / PPTX 结构丢失）。
+   → **每轮先探针实测 + 扫新轴，再选题**，别照抄上一份候选表。
+2. **`normalizeText` 会把连续空格压成一个**：列表缩进（2 空格 / 4 空格）在归一化后全塌成 1 格。
+   解法：**哨兵占位**（`DOCX_INDENT = '\u0000'`）→ 归一化后再替换成空格；断言要盯**缩进宽度**。
+3. **Edit 工具写入 `\u0000` 会落成真 NUL 字节**：源码变 binary（grep 报 `Binary file matches`）。
+   落笔后必须扫一遍 NUL 并替换成源码转义文本（引号内 / 正则内两种位置都成立）。
+4. **`tsc` 显式列文件时 `--rootDir` 与 `--outDir` 要配套**：
+   `--rootDir electron --outDir .../tsout` → 产物落在 `tsout/main/*.js`（自测 require 的路径）；
+   `--rootDir electron --outDir .../tsout/main` → **多套一层 `main/`**，自测 require 到**旧文件** → **假绿**。
+   坑点在于「旧文件仍在原地」不会报错。
+5. **`outlineLvl` 优先于 style 名**：Word 的 `Heading1` 自带 `outlineLvl`；中文版 style 名是 `标题 1`。
+   两条路都得认（`outlineLvl` 优先、名字兜底）。
+6. **多级编号的计数器要按层级清零**：本级 +1、更深层归 1，否则 `2.1.` 之后会连成 `2.3.`。
+7. **相邻 run 的 markdown 标记会首尾相撞**：`普通` + `**粗体**` + `*斜体*` + `***粗斜***` 拼出
+   `普通**粗体***斜体****粗斜***`（斜体的收尾 `*` 与粗斜的开头 `***` 相连成 4 个星号）——
+   逐 run 语义正确（`**` / `*` / `***`），但**整行**看是 4 星号，断言按**实际输出**写，别按直觉写。
+8. **上下文 160K 硬闸门仍会拦 Bash**：上一会话在 164K 时被拦（只放行 Write/Edit）→ 被迫落 WIP handoff。
+   教训不变：写代码前估「还要读多少」，长文件读一次后只引用路径。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 
