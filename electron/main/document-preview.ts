@@ -1277,14 +1277,165 @@ const MONTH_LONG = [
 const WEEK_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const WEEK_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-/** 中文月/星期名（只在格式码写了 zh-CN locale 前缀时启用，见 §5.37） */
+/** 中文月/星期名（只在格式码写了 zh locale 前缀时启用，见 §5.37 / §5.38） */
 const MONTH_ZH = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二']
 const WEEK_ZH = ['日', '一', '二', '三', '四', '五', '六']
 
-/** locale id → 是否简体中文（Excel 的 zh-CN LCID = 0x804） */
-function isZhLocale(localeId: string): boolean {
+/** 日语：Excel 的月份就是「3月」这种数字 + 月，没有字母缩写 */
+const MONTH_JA = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']
+const WEEK_JA_LONG = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日']
+const WEEK_JA_SHORT = ['日', '月', '火', '水', '木', '金', '土']
+
+/** 德语 */
+const MONTH_DE_LONG = [
+  'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
+  'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'
+]
+const MONTH_DE_SHORT = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
+const WEEK_DE_LONG = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
+const WEEK_DE_SHORT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+
+/** 法语 */
+const MONTH_FR_LONG = [
+  'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'
+]
+const MONTH_FR_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
+const WEEK_FR_LONG = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi']
+const WEEK_FR_SHORT = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.']
+
+type LocaleLang = 'zh' | 'zhTW' | 'ja' | 'de' | 'fr' | 'en'
+
+interface LocaleNames {
+  /** 月名风格：latin = mmm→缩写 / mmmm→全名 / mmmmm→首字母；zh =「三月」型；cjkNum =「3月」型 */
+  monthStyle: 'latin' | 'zh' | 'cjkNum'
+  /** 星期名风格：latin = ddd→缩写 / dddd→全名；zh =「周三」/「星期三」型 */
+  weekStyle: 'latin' | 'zh'
+  monthShort: string[]
+  monthLong: string[]
+  weekShort: string[]
+  weekLong: string[]
+  am: string
+  pm: string
+}
+
+const LOCALE_NAMES: Record<LocaleLang, LocaleNames> = {
+  en: {
+    monthStyle: 'latin',
+    weekStyle: 'latin',
+    monthShort: MONTH_SHORT,
+    monthLong: MONTH_LONG,
+    weekShort: WEEK_SHORT,
+    weekLong: WEEK_LONG,
+    am: 'AM',
+    pm: 'PM'
+  },
+  zh: {
+    monthStyle: 'zh',
+    weekStyle: 'zh',
+    monthShort: MONTH_ZH,
+    monthLong: MONTH_ZH,
+    weekShort: WEEK_ZH,
+    weekLong: WEEK_ZH,
+    am: '上午',
+    pm: '下午'
+  },
+  // 繁体中文的月/星期/上下午写法与简体一致，只是前缀不同
+  zhTW: {
+    monthStyle: 'zh',
+    weekStyle: 'zh',
+    monthShort: MONTH_ZH,
+    monthLong: MONTH_ZH,
+    weekShort: WEEK_ZH,
+    weekLong: WEEK_ZH,
+    am: '上午',
+    pm: '下午'
+  },
+  ja: {
+    monthStyle: 'cjkNum',
+    weekStyle: 'latin',
+    monthShort: MONTH_JA,
+    monthLong: MONTH_JA,
+    weekShort: WEEK_JA_SHORT,
+    weekLong: WEEK_JA_LONG,
+    am: '午前',
+    pm: '午後'
+  },
+  de: {
+    monthStyle: 'latin',
+    weekStyle: 'latin',
+    monthShort: MONTH_DE_SHORT,
+    monthLong: MONTH_DE_LONG,
+    weekShort: WEEK_DE_SHORT,
+    weekLong: WEEK_DE_LONG,
+    am: 'AM',
+    pm: 'PM'
+  },
+  fr: {
+    monthStyle: 'latin',
+    weekStyle: 'latin',
+    monthShort: MONTH_FR_SHORT,
+    monthLong: MONTH_FR_LONG,
+    weekShort: WEEK_FR_SHORT,
+    weekLong: WEEK_FR_LONG,
+    am: 'AM',
+    pm: 'PM'
+  }
+}
+
+/**
+ * Excel locale id（LCID 十六进制）→ locale。
+ * 认得的：zh-CN 0x804 · zh-TW 0x404 · ja-JP 0x411 · de-DE 0x407 · fr-FR 0x40C · en-US 0x409。
+ * 认不出的（以及压根没写 locale 前缀的）一律落英文 —— 保持可复现，不猜。
+ */
+function localeKind(localeId: string): LocaleLang | null {
   const id = localeId.trim().toLowerCase().replace(/^0+(?=\d)/, '')
-  return id === '804'
+  switch (id) {
+    case '804':
+      return 'zh'
+    case '404':
+      return 'zhTW'
+    case '411':
+      return 'ja'
+    case '407':
+      return 'de'
+    case '40c':
+      return 'fr'
+    case '409':
+      return 'en'
+    default:
+      return null
+  }
+}
+
+/** 月名 → 显示文本（按 locale 的月份风格；count<=2 是纯数字） */
+function renderMonthName(count: number, mo: number, names: LocaleNames): string {
+  if (names.monthStyle === 'zh') {
+    if (count >= 5) return names.monthLong[mo - 1].slice(0, 1)
+    if (count === 4) return `${names.monthLong[mo - 1]}月`
+    if (count === 3) return `${mo}月`
+  } else if (names.monthStyle === 'cjkNum') {
+    const text = names.monthShort[mo - 1]
+    if (count >= 5) return text.slice(0, 1)
+    if (count >= 3) return text
+  } else {
+    if (count >= 5) return names.monthLong[mo - 1].slice(0, 1)
+    if (count === 4) return names.monthLong[mo - 1]
+    if (count === 3) return names.monthShort[mo - 1]
+  }
+  return count === 1 ? String(mo) : String(mo).padStart(2, '0')
+}
+
+/** 星期名 → 显示文本（count<=2 是「几号」，返回空串交给调用方） */
+function renderWeekName(count: number, weekday: number, names: LocaleNames): string {
+  if (names.weekStyle === 'zh') {
+    if (count >= 4) return `星期${names.weekLong[weekday]}`
+    if (count === 3) return `周${names.weekShort[weekday]}`
+    return ''
+  }
+  if (count >= 4) return names.weekLong[weekday]
+  if (count === 3) return names.weekShort[weekday]
+  return ''
 }
 
 /** 判断一段格式码是不是日期/时间（含 [h] 时长） */
@@ -1309,9 +1460,12 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
   const pad = (n: number, width: number): string => String(n).padStart(width, '0')
   const ampmToken = tokens.find((t) => t.type === 'ampm' || t.type === 'ap')
   const use12h = ampmToken !== undefined
-  // 写了 `[$-804]`（zh-CN locale 前缀）→ 月/星期/上下午出中文；否则固定英文（可复现）
+  // 写了 locale 前缀（`[$-804]` 等）→ 月/星期/上下午按该 locale 本地化；
+  // 没写前缀或 locale 认不出 → 固定英文（可复现）
   const localeToken = tokens.find((t) => t.type === 'locale')
-  const zh = localeToken !== undefined && isZhLocale(localeToken.text)
+  const lang: LocaleLang = (localeToken ? localeKind(localeToken.text) : null) ?? 'en'
+  const names = LOCALE_NAMES[lang]
+  const cjkAmPm = lang === 'zh' || lang === 'zhTW' || lang === 'ja'
   const hour12 = p.hh % 12 === 0 ? 12 : p.hh % 12
   const isMinuteAt = (k: number): boolean => {
     let prev: DateToken | null = null
@@ -1331,6 +1485,9 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
     return prev?.type === 'h' || prev?.type === 'eh' || next?.type === 's'
   }
   const totalSec = Math.round(serial * 86_400)
+  // 时长上下文：格式码里出现 [h]/[m]/[s] 之后，后面的 h/m/s 按「总时长的分量」算，
+  // 而不是当天时钟的时分秒（两者平时相等，亚秒舍入边界会差 1 秒）
+  let inDuration = false
   let out = ''
   for (let k = 0; k < tokens.length; k++) {
     const t = tokens[k]
@@ -1342,49 +1499,42 @@ function renderDateCode(serial: number, p: SerialParts, tokens: DateToken[]): st
         out += t.count === 2 ? pad(p.y % 100, 2) : String(p.y)
         break
       case 'm':
-        if (isMinuteAt(k)) out += t.count === 1 ? String(p.mi) : pad(p.mi, 2)
-        else if (zh) {
-          if (t.count >= 5) out += MONTH_ZH[p.mo - 1].slice(0, 1)
-          else if (t.count === 4) out += `${MONTH_ZH[p.mo - 1]}月`
-          else if (t.count === 3) out += `${p.mo}月`
-          else out += t.count === 1 ? String(p.mo) : pad(p.mo, 2)
-        } else if (t.count >= 5) out += MONTH_LONG[p.mo - 1].slice(0, 1)
-        else if (t.count === 4) out += MONTH_LONG[p.mo - 1]
-        else if (t.count === 3) out += MONTH_SHORT[p.mo - 1]
-        else out += t.count === 1 ? String(p.mo) : pad(p.mo, 2)
+        if (inDuration) out += pad(Math.floor(totalSec / 60) % 60, t.count)
+        else if (isMinuteAt(k)) out += t.count === 1 ? String(p.mi) : pad(p.mi, 2)
+        else out += renderMonthName(t.count, p.mo, names)
         break
       case 'd': {
         const weekday = new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay()
-        if (zh) {
-          if (t.count >= 4) out += `星期${WEEK_ZH[weekday]}`
-          else if (t.count === 3) out += `周${WEEK_ZH[weekday]}`
-          else out += t.count === 1 ? String(p.d) : pad(p.d, 2)
-        } else if (t.count >= 4) out += WEEK_LONG[weekday]
-        else if (t.count === 3) out += WEEK_SHORT[weekday]
-        else out += t.count === 1 ? String(p.d) : pad(p.d, 2)
+        const weekText = renderWeekName(t.count, weekday, names)
+        out += weekText !== '' ? weekText : t.count === 1 ? String(p.d) : pad(p.d, 2)
         break
       }
       case 'h':
-        out += t.count === 1 ? String(use12h ? hour12 : p.hh) : pad(use12h ? hour12 : p.hh, 2)
+        if (inDuration) out += pad(Math.floor(totalSec / 3600), t.count)
+        else out += t.count === 1 ? String(use12h ? hour12 : p.hh) : pad(use12h ? hour12 : p.hh, 2)
         break
       case 's':
-        out += t.count === 1 ? String(p.ss) : pad(p.ss, 2)
+        if (inDuration) out += pad(totalSec % 60, t.count)
+        else out += t.count === 1 ? String(p.ss) : pad(p.ss, 2)
         break
       case 'ampm':
-        if (zh) out += p.hh < 12 ? '上午' : '下午'
+        if (cjkAmPm) out += p.hh < 12 ? names.am : names.pm
         else out += p.hh < 12 ? t.text.slice(0, 2).toUpperCase() : t.text.slice(3).toUpperCase()
         break
       case 'ap':
-        if (zh) out += p.hh < 12 ? '上午' : '下午'
+        if (cjkAmPm) out += p.hh < 12 ? names.am : names.pm
         else out += p.hh < 12 ? 'A' : 'P'
         break
       case 'eh':
+        inDuration = true
         out += pad(Math.floor(totalSec / 3600), t.count)
         break
       case 'em':
+        inDuration = true
         out += pad(Math.floor(totalSec / 60), t.count)
         break
       case 'es':
+        inDuration = true
         out += pad(totalSec, t.count)
         break
     }
@@ -1871,6 +2021,21 @@ function renderNumericCell(raw: string, code: string, date1904: boolean): string
   return renderNumberCode(num, code) ?? raw
 }
 
+/**
+ * 文本单元格 → 显示文本：格式码里 `@` 前后的字面量要显示出来（`"¥"@` → `¥abc`）。
+ * Excel 的文本占位符 `@` 本身不产出内容，只把两侧的字面量夹住文本；
+ * 没有**结构** `@` 的格式段（纯数字格式）对文本不生效 —— 文本原样输出。
+ */
+function renderTextCell(value: string, code: string): string {
+  const sections = splitFormatSections(code)
+  // Excel 的文本格式有 4 段（正 / 负 / 零 / 文本）；不足 4 段时文本用第 1 段
+  const section = sections.length >= 4 ? sections[3] ?? '' : sections[0] ?? ''
+  const { text, masked } = flattenFormatSection(section)
+  const at = masked.indexOf('@')
+  if (at < 0) return value
+  return `${text.slice(0, at)}${value}${text.slice(at + 1)}`
+}
+
 /** 单元格样式索引 → 格式码（null = General / 未识别） */
 function resolveFormatCode(styles: XlsxStyles, styleIdx: number): string | null {
   const numFmtId = styles.cellXfFmtIds[styleIdx] ?? 0
@@ -1992,10 +2157,11 @@ function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1
           }
         }
       }
-      // 文本单元格的颜色在第 4 个格式段（`[Blue]@` 之类）
+      // 文本单元格：格式码里 @ 前后的字面量要显示（`"¥"@` → `¥abc`）；颜色在第 4 个格式段
       if (sectionColor === null && (type === 's' || type === 'inlineStr' || type === 'str')) {
         const code = fmtOf(styleIdx)
         if (code) {
+          value = renderTextCell(value, code)
           const sections = splitFormatSections(code)
           if (sections.length >= 4) sectionColor = sectionColorName(sections[3] ?? '')
         }

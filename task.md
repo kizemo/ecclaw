@@ -169,6 +169,22 @@
 > 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
 > 秒级自测 **42/42**；e2e **48/48**；✅ **全量回归 run66 十九套 628/628 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4h-final-2026-11-05.md`。
+> **第三十四阶段（XLSX 日期 locale 扩展 + 文本格 `@` 字面量）已完成并真机验证（`phase4i-e2e.cjs` **53/53** 全绿）**：
+> §5.37 只做了 `[$-804]`（zh-CN），本轮把 locale **扩到 5 种**：zh-CN `804` / zh-TW `404` / ja-JP `411` /
+> de-DE `407` / fr-FR `40C`，en-US `409` 显式支持；日语出 `水曜日`/`水`/`午後`，德语 `Mär`/`März`/`Mittwoch`/`Mi`，
+> 法语 `mars`/`mercredi`/`mer.`；**认不出的 locale 一律回落英文**（`[$-999]` → `Mar 15, 2023`）。
+> **不连带改日期先后顺序**（格式码怎么写就怎么输出），locale 只影响**名称**。
+> **文本格 `@` 字面量**：`"¥"@` → `¥abc`、`"预"@"后"` → `预abc后`（此前一律裸 `abc`）；
+> 靠**掩码串**里的**结构 `@`** 判定真占位符 —— 字面量里的 `@` 不算（`"a@b"@` → `a@bx`）；
+> 纯数字格式对文本格**仍不生效**（`0.00` 套文本 → `abc`）；格式码第 4 段优先，不足 4 段取第 1 段。
+> **duration 取数一致性小修**：`[h]:mm:ss` 语境下 `mm`/`ss` 改从**总秒取模**（原先取当天时钟的分钟/秒，
+> 亚秒舍入边界会差 1 秒），**输出实测不变**。
+> **本轮最大的收获是「候选清单会过期」**：开打前探针实测发现 §5.37 handoff §9 候选里的
+> 「日期 duration」与「科学计数法负指数」**早已实现且与 Excel 一致**（候选过期），
+> 真缺口只有 locale 扩展与文本 `@` 两项 → **先探针再选题**。
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **47/47**；e2e **53/53**；✅ **全量回归 run67 二十套 681/681 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4i-final-2026-11-05.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -267,6 +283,40 @@
 10. **改了行为就必须同步改旧断言**：phase4d 断言的 `科学一位` / `科学内置48` 原本期望 `1.2E+4`，
     工程格式修正后应变成 `12.3E+3` —— 这是**行为修正**（Excel 本来就是这样），不是回归；
     已同步更新 phase4d 自测 / e2e 的期望值，并在 README §5.33 注明工程格式规则。
+
+## 第三十四阶段（2026-11-05）：XLSX 日期 locale 扩展 + 文本格 `@` 字面量 ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 开打前用 `make-phase4i-probe.cjs` / `probe-4i.cjs` / `make-phase4i-probe2.cjs` **实测** phase4h handoff §9 的候选清单 → 「日期 duration `[h]:mm:ss`」与「科学计数法负指数 / `E-`」**早已实现且与 Excel 一致**（候选过期）；真缺口只有 **locale 扩展**（`[$-411]/[$-407]/[$-40C]/[$-404]` 全回落英文 `Mar`）与**文本格 `@`**（`"¥"@` → `abc`，Excel 是 `¥abc`）两项。顺带纠正 §9 的 LCID 错误：`[$-407]` 是**德语**不是法语（法语 `0x40C`，日语 `0x411`，§9 写的 `[$-041]` 无此 LCID） |
+| 2 | locale 表 | ✅ | 删 `isZhLocale()`；新增 `MONTH_JA/WEEK_JA_*`、`MONTH_DE_*`、`MONTH_FR_*` 表；`type LocaleLang = 'zh'\|'zhTW'\|'ja'\|'de'\|'fr'\|'en'`；`interface LocaleNames`（`monthStyle: 'latin'\|'zh'\|'cjkNum'`、`weekStyle: 'latin'\|'zh'`）；`LOCALE_NAMES` 表；新增 `localeKind(localeId)`（LCID 去前导 0 + 小写 → locale，**认不出返回 null 落英文**）与 `renderMonthName()` / `renderWeekName()` |
+| 3 | renderDateCode 改造 | ✅ | 头部 `zh` 布尔 → `lang: LocaleLang` + `names = LOCALE_NAMES[lang]` + `cjkAmPm`；switch 里 `'m'`/`'d'` 改走 `renderMonthName`/`renderWeekName`；`'ampm'`/`'ap'` 用 `names.am/pm`；`'eh'/'em'/'es'` 置 `inDuration = true`；新增 `let inDuration = false` |
+| 4 | 文本格 `@` | ✅ | 新增 `renderTextCell(value, code)`：取格式码**第 4 段**（不足 4 段取第 1 段）→ `flattenFormatSection()` → 在**掩码串**上找**结构 `@`** → 输出 `前缀字面量 + 文本 + 后缀字面量`；**无结构 `@` 的格式段不生效**（`0.00` 套文本仍出 `abc`）。表格文本格分支（`t="s"`/`inlineStr`/`str`）接入 |
+| 5 | duration 一致性小修 | ✅ | 进入 duration 上下文（`eh`/`em`/`es` 之后）后，`mm`/`ss` 改从 `totalSec` 取模（`h`=总小时、`m`=总分钟 mod 60、`s`=总秒 mod 60）；旧实现取的是**当天时钟**的 `p.mi`/`p.ss`（平时恰等于总时长的 mod 60，**亚秒舍入边界会差 1 秒**）。**输出实测不变** |
+| 6 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` **全不动** → **MCP 工具数仍 27**、仍无必填参数；**无新增依赖**；zh-CN 与英文输出**一字未动**（phase4h 既有断言继续绿） |
+| 7 | e2e + 回归 | ✅ | `phase4i-selftest.cjs` **47/47**（41 行整行相等 + 行数 + kind + error + 4 条负向断言）；`phase4i-e2e.cjs` **53/53**（工具面 3 · 抽取 45 · 界面 5；产物 `run67-phase4i.log`）；**全量回归 run67 二十套 681/681 全绿**（4i 53 · 4h 48 · 4g 30 · 4f 26 · 4e 21 · 4d 31 · 4c 26 · 4b 18 · 4a 20 · 3z 37 · 3y 31 · 3x 41 · 3w 27 · 3v 29 · 3u 24 · 3t 16 · 3r 31 · 3p 45 · 3o 44 · 3m 69 · sse 14，FAIL 全 0；摘要 `run67-summary.txt`）。未跑真站 phase3s/3q |
+
+第三十四阶段实证发现：
+
+1. **上一份 handoff 的 §9 候选清单会过期**：「日期 duration」与「科学计数法负指数」两条
+   phase4h 就已经实现了（探针实测与 Excel 一致）→ **照抄候选表会白做一遍**。
+   下一轮**先探针实测再选题**，别直接抄。
+2. **§9 的 LCID 也可能写错**：`[$-407]` 被当成法语（实为德语），法语是 `0x40C`，日语是 `0x411`。
+   locale 类需求**先核 LCID 表**再动手。
+3. **文本格的 `@` 只能靠掩码串区分**：`"a@b"@` 里的 `@` 是字面量、`@` 是结构占位符 ——
+   两者在扁平串上长得一样。`flattenFormatSection()` 产出的 `text` 与 `masked` **等长**，
+   所以**掩码下标可直接当字面量下标用**（前缀 / 后缀字面量按掩码位置切）。
+4. **`@` 的位置不限**：Excel 允许 `"预"@"后"`，所以不能只认「前缀 + @」一种形状，
+   必须按掩码里 `@` 的位置切前后两段。
+5. **纯数字格式对文本格不生效**是必须钉住的行为（Excel 也如此）：
+   `0.00` 套文本 → `abc`，不能顺手把数字格式化逻辑套上去。
+6. **locale 只影响「名称」，不连带改日期先后顺序**：格式码 `d/m/y` 就按 `d/m/y` 输出，
+   不因 locale 变成 `m/d/y` → 输出**可复现**，也不会误伤 phase3y/3z 的既有英文断言。
+7. **负向断言要扫「值」不扫整行，且文本用例要排除**：
+   标签 `文本-第四段` 本身含中文 → 整行扫会误伤；文本用例自带中文字面量（`预abc后`）
+   → 也不能进「非 CJK locale 行」的 CJK 检查。
+8. **上下文 160K 硬闸门会拦 Bash**：本轮上半场就撞上一次（164K 时只放行 Write/Edit）。
+   → **写代码前先估「还要读多少」**；长文件读一次后**只引用路径**；大改动前先把设计敲定、少回头读。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 
