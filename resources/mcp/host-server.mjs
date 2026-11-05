@@ -644,14 +644,17 @@ const TOOLS = [
     description:
       '预览文件库里的文档（支持 PDF / DOCX / PPTX / XLSX）。不传 path/name 时返回文件库文档清单（名称/类型/大小）；' +
       '传 path 或 name 时返回该文档的文本（PDF 按页，DOCX / PPTX / XLSX 为全文）。只读：本地解析、不联网、不外发、不改用户文件。' +
-      '（PDF 位图预览只在界面里提供，不返回给 agent，避免把 base64 灌进上下文。）',
+      '（PDF 位图预览只在界面里提供，不返回给 agent，避免把 base64 灌进上下文。）' +
+      '（PDF 还会返回 outline 目录：章节标题 + 目标页码；长文档可用 startPage / endPage 只抽其中一段页码。）',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '文件库内的文件绝对路径（与 name 二选一）' },
         name: { type: 'string', description: '文件库内的文件名（与 path 二选一）' },
         maxPages: { type: 'number', description: '可选：最多抽取多少页（默认全部，上限 200）' },
-        maxChars: { type: 'number', description: '可选：最多抽取多少字（默认 200000）' }
+        maxChars: { type: 'number', description: '可选：最多抽取多少字（默认 200000）' },
+        startPage: { type: 'number', description: '可选：从第几页开始抽（PDF 专用，1 起；越界会被夹到有效范围）' },
+        endPage: { type: 'number', description: '可选：抽到第几页为止（含；PDF 专用，越界会被夹到有效范围）' }
       },
       additionalProperties: false
     }
@@ -811,7 +814,10 @@ async function runTool(name, args) {
         path: p,
         name: n,
         maxPages: pick(a, 'maxPages'),
-        maxChars: pick(a, 'maxChars')
+        maxChars: pick(a, 'maxChars'),
+        // 第三十一阶段：只抽长文档里的一段页码（PDF 专用）
+        startPage: pick(a, 'startPage'),
+        endPage: pick(a, 'endPage')
       })
     }
     default:

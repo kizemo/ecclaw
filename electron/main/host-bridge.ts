@@ -252,11 +252,14 @@ async function dispatch(op: string, params: Record<string, unknown>): Promise<un
       return listDocuments()
     case 'document-preview':
       // 文档预览（第二十一阶段）：只读，本地解析，不外发。
+      // 第三十一阶段：startPage / endPage 让 agent 只抽长文档里的一段页码。
       return previewDocument({
         path: typeof params.path === 'string' ? params.path : undefined,
         name: typeof params.name === 'string' ? params.name : undefined,
         maxPages: params.maxPages === undefined ? undefined : Number(params.maxPages),
-        maxChars: params.maxChars === undefined ? undefined : Number(params.maxChars)
+        maxChars: params.maxChars === undefined ? undefined : Number(params.maxChars),
+        startPage: params.startPage === undefined ? undefined : Number(params.startPage),
+        endPage: params.endPage === undefined ? undefined : Number(params.endPage)
       })
     default:
       throw new Error(`未知的宿主操作：${op}`)

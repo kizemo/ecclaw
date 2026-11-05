@@ -201,6 +201,15 @@ export interface DocumentPreviewPage {
   text: string
 }
 
+/** PDF 目录（书签）节点（第三十一阶段：目录跳转） */
+export interface DocumentOutlineNode {
+  title: string
+  /** 目标页码（1 起）；书签目标解析不出来时为 null（不猜页码） */
+  page: number | null
+  /** 子目录（可为空） */
+  children: DocumentOutlineNode[]
+}
+
 /** 文档预览结果（只读；error 非空时说明为什么预览不了） */
 export interface DocumentPreview {
   kind: DocumentKind
@@ -213,6 +222,12 @@ export interface DocumentPreview {
   text: string
   truncated: boolean
   error: string | null
+  /** 本次实际抽取的起始页（1 起；第三十一阶段起可指定页码范围） */
+  pageStart?: number
+  /** 本次实际抽取的结束页（含） */
+  pageEnd?: number
+  /** 目录（书签）：非 PDF 或没有书签时为空数组 */
+  outline?: DocumentOutlineNode[]
 }
 
 /** 单页位图渲染结果（第二十二阶段：UI 位图预览，PDF 专用） */

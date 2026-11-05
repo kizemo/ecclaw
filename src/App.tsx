@@ -3,6 +3,7 @@ import {
   api,
   type AllowRule,
   type ApprovalScope,
+  type DocumentOutlineNode,
   type DocumentPageImage,
   type DocumentPreview,
   type FileEntry,
@@ -46,6 +47,19 @@ const THUMB_WIDTH = 132
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3]
 /** PDF 预览：默认缩放倍率 */
 const DEFAULT_ZOOM = 1.5
+
+/** 目录树 → 扁平列表（带层级，界面按缩进显示；测试按序号定位） */
+function flattenOutline(nodes: DocumentOutlineNode[] | undefined): Array<{ title: string; page: number | null; depth: number }> {
+  const out: Array<{ title: string; page: number | null; depth: number }> = []
+  const walk = (list: DocumentOutlineNode[] | undefined, depth: number): void => {
+    for (const n of list ?? []) {
+      out.push({ title: n.title, page: n.page ?? null, depth })
+      walk(n.children, depth + 1)
+    }
+  }
+  walk(nodes, 0)
+  return out
+}
 
 const NAV: Array<{ key: View; label: string }> = [
   { key: 'chat', label: '对话' },
@@ -997,6 +1011,9 @@ function FilesView({
   const totalPages = preview?.pageCount ?? 0
   const currentPage = image?.page ?? 1
 
+  /** 目录（书签）扁平列表；没有书签就是空数组（不显示面板） */
+  const outlineItems = useMemo(() => flattenOutline(preview?.outline), [preview])
+
   /** 缩略图窗口：以当前页为中心的连续若干页（页数不够时从头排） */
   const thumbPages = useMemo(() => {
     if (!totalPages) return []
@@ -1088,6 +1105,28 @@ function FilesView({
               </p>
               {preview.kind === 'pdf' ? (
                 <div className="doc-preview-pdf">
+                  {outlineItems.length ? (
+                    <div className="doc-preview-outline" data-testid="doc-preview-outline">
+                      <p className="hint">目录</p>
+                      {outlineItems.map((item, i) => (
+                        <button
+                          key={i}
+                          className="doc-preview-outline-item"
+                          data-testid={`doc-preview-outline-${i}`}
+                          data-page={item.page === null ? '' : String(item.page)}
+                          data-depth={item.depth}
+                          disabled={item.page === null}
+                          style={{ paddingLeft: `${8 + item.depth * 16}px` }}
+                          onClick={() => {
+                            if (item.page) void showPage(preview.path, item.page)
+                          }}
+                        >
+                          <span className="doc-preview-outline-title">{item.title || '（无标题）'}</span>
+                          <span className="doc-preview-outline-page">{item.page === null ? '?' : item.page}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="doc-preview-toolbar" data-testid="doc-preview-toolbar">
                     <button
                       className="link"

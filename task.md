@@ -128,6 +128,16 @@
 > 界面另加**页码输入 + 跳转**与**缩放七档**（50/75/100/150/200/300%，主进程夹 0.5–3）。
 > 位图仍**只给界面**、不返回 agent；MCP 工具数仍 27，无新增依赖。
 > 秒级自测 **33/33**；run63 十七套 **524/524** 全绿。交接见 `handoff-ecclaw-phase4e-final-2026-11-05.md`。
+> **第三十一阶段（PDF 目录（书签）导航 + 页码范围抽取）已完成并真机验证（`phase4f-e2e.cjs` **26/26** 全绿）**：
+> PDF 预览与 agent 侧预览各补一件事：**能看见目录**、**能只抽一段页码**。
+> 目录（书签）解析 PDF 的 outline（支持多级），`page` 解析不出来时是 `null` —— **不猜页码**（猜错了点了会跳到别的页）；
+> 界面 PDF 预览顶部出现目录面板，**点目录项直接跳到对应页**，没有书签就不显示面板；
+> agent 侧返回里带 `outline`（章节标题 + 页码）。目录是加分项：解析失败一律当「没有目录」，绝不影响正文抽取。
+> `ecclaw_document_preview` 新增可选参数 `startPage` / `endPage`（PDF 专用）：越界一律夹住，
+> 只给 `startPage` 就抽到末尾、只给 `endPage` 就从第 1 页抽起，`startPage > endPage` 夹成同一页，NaN 退回全文；
+> 与 `maxPages`（上限 200）叠加生效；返回带 `pageStart` / `pageEnd`，范围没覆盖全文时 `truncated` 为 true。
+> MCP 工具数仍 **27**，无新增依赖；秒级自测 **38/38**；e2e **26/26**；**run64 十八套 550/550 全绿**（FAIL 全 0；未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4f-final-2026-11-05.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -183,7 +193,37 @@
    1904 历元（Mac 老文件）基准不同，靠 `workbookPr@date1904="1"` 区分。
 4. **只转数值型单元格**：日期样式挂到共享字符串上时**不能转**（转了就毁内容）→ 判断放在 `type === 'n'` 分支内。
 5. **「该不该转」比「怎么转」更容易出错**：本轮专门造了三个反例钉住行为 —— 无样式的纯数字（`45000` 保持原样）、
-   时长格式 `[h]:mm:ss`（`1.5` 保持原样）、自定义非日期格式 `0.00`（`12.5` 保持原样）。
+    时长格式 `[h]:mm:ss`（`1.5` 保持原样）、自定义非日期格式 `0.00`（`12.5` 保持原样）。
+
+## 第三十一阶段（2026-11-05）：PDF 目录（书签）导航 + 页码范围抽取 ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 主进程：目录解析 | ✅ | 新增 `readPdfOutline()` + `outlineDestPage()`：读 pdfjs 的 `getOutline()`，dest 三形态（命名目标 / 目标数组 / 其它）分别处理，页面引用经 `getPageIndex` 换成 1 起的页码；**解析不出来 → page = null（不猜页码）**；限深 `MAX_OUTLINE_DEPTH = 8` 防畸形文件自引用；**解析失败一律当「没有目录」，不影响正文抽取** |
+| 2 | 主进程：页码范围抽取 | ✅ | `previewDocument()` 增 `startPage` / `endPage`：越界一律夹住（`startPage` → `[1,total]`，`endPage` → `[start,total]`），只给 start 抽到末尾、只给 end 从第 1 页抽起，`start > end` 夹成同一页，NaN 退回全文；与 `maxPages`（上限 200）叠加；返回带 `pageStart` / `pageEnd`；范围没覆盖全文 → `truncated = true` |
+| 3 | 契约 / agent | ✅ | `electron/shared/types.ts` 增 `DocumentOutlineNode`，`DocumentPreview` 增 `pageStart?` / `pageEnd?` / `outline?`；`electron/main/host-bridge.ts` 透传 startPage / endPage；`resources/mcp/host-server.mjs` 的 `ecclaw_document_preview` 增两个可选参数并在描述里说明；**工具数仍 27**，仍无必填参数 |
+| 4 | 界面：目录面板 | ✅ | `src/App.tsx`：目录树摊平成带层级的扁平列表（`flattenOutline`），PDF 预览顶部渲染目录面板，**点目录项 → `showPage(path, page)` 直接跳页**；没有书签就不显示面板；`src/styles.css` 配套样式 |
+| 5 | 依赖 / 红线 | ✅ | **无新增依赖**（沿用 `pdfjs-dist`）；位图仍只给界面、不返回 agent；未跑真站 phase3s / phase3q（不碰淘宝） |
+| 6 | e2e + 回归 | ✅ | `phase4f-selftest.cjs` **38/38**；`phase4f-e2e.cjs` **26/26**（产物 `run64-phase4f.log`）；**全量回归 run64 十八套 550/550 全绿**（FAIL 全 0，摘要 `run64-summary.txt`；未跑真站 phase3s/3q）。首轮 phase3v 红 1 条 = **套件断言陈旧**（把 `document_preview` 参数个数写死成 4，phase4f 新增 `startPage`/`endPage` 后必然红）→ **只改脚本**（`props.length === 4` → `>= 4`）、**零产品改动**，复跑 29/29 |
+
+第三十一阶段实证发现：
+
+1. **夹页码时两个端点的默认值要分开**：`startPage` 不给 → 默认第 1 页，`endPage` 不给 → 默认**最后一页**。
+   早先两端共用同一个「非法值退回 min」→ `endPage` 不给时退回第 1 页，整篇只剩 1 页
+   （秒级自测一轮就抓出 6 条红：全文页数 / pageEnd / truncated / 只给 startPage / NaN / 旧夹具回归）。
+2. **`maxPages` 只能「从头取 N 页」**：agent 想看长文档第 80 页附近时，原来只能拿到前 200 页 →
+   `startPage` / `endPage` 补上「只抽这一段」；两者**叠加**生效（范围再被 maxPages 截）。
+3. **书签目标解析不出来就不给页码**：`page = null` 比猜一个页码安全 —— 猜错了点一下会跳到别的页，比不跳更糟。
+4. **目录是加分项，不能拖累正文**：解析 outline 失败一律当「没有目录」，绝不让整份预览失败。
+5. **目录树先摊平成带层级的扁平列表再渲染**：递归组件不好定位（测试没法按序号点），
+   摊平后既能按缩进显示层级，也能按序号稳定定位。
+6. **PDF 目录是现成能力，不用自己解析 xref**：pdfjs 的 `getOutline()` + `getPageIndex()` 直接给页码，
+   自己按对象号反推页序反而容易错（对象号 ≠ 页序）。
+7. **老套件把「工具参数个数」写死，新加可选参数就会假红**：phase3v 断言
+   `document_preview 参数 = path/name/maxPages/maxChars` 用的是 `props.length === 4` —— 本轮新增
+   `startPage` / `endPage` 后必然红（实测 28/29）。这是**脚本 bug 而非产品 bug**（本轮 e2e 自己断言了
+   这两个参数存在且范围抽取生效）→ 改成 `props.length >= 4`（保留「四个老参数都还在」的原意，
+   只去掉易碎的个数钉死），复跑 **29/29**。教训：断言「某参数存在」别断言「参数总数恰好是 N」。
 
 ## 第三十阶段（2026-11-05）：PDF 多页缩略图 + 指定页 / 缩放渲染参数 ✅
 

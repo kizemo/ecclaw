@@ -168,3 +168,21 @@ button.link:hover { color: var(--accent); }
 }
 .doc-preview-thumb img { display: block; width: 66px; height: auto; background: #fff; border-radius: 4px; }
 .doc-preview-thumb[data-active='true'] { border-color: var(--accent); color: var(--text); }
+
+/* PDF 预览：目录（书签）面板（第三十一阶段） */
+.doc-preview-outline {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 220px; overflow-y: auto;
+  padding: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.doc-preview-outline p.hint { margin: 0 0 4px; }
+.doc-preview-outline-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 3px 8px; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  font-size: 12px; color: var(--text); cursor: pointer;
+}
+.doc-preview-outline-item:hover:not(:disabled) { background: var(--panel); border-color: var(--line); }
+.doc-preview-outline-item:disabled { color: var(--muted); cursor: default; }
+.doc-preview-outline-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-preview-outline-page { color: var(--muted); font-variant-numeric: tabular-nums; }

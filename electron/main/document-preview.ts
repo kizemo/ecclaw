@@ -6,6 +6,7 @@ import { unzipSync } from 'fflate'
 import { paths } from './paths'
 import type {
   DocumentKind,
+  DocumentOutlineNode,
   DocumentPageImage,
   DocumentPreview,
   DocumentPreviewPage
@@ -18,6 +19,7 @@ import type {
  * 第二十四阶段：XLSX 日期还原（读 styles.xml 的 numberFormat，序列号 → 日期）。
  * 第二十五阶段：XLSX 照搬 Excel 显示样式（日期/数字统一按 formatCode 渲染）+ DOCX 表格转 Markdown。
  * 第三十阶段：PDF 多页缩略图（按目标宽度归一渲染）+ 渲染参数（page / scale）暴露到界面。
+ * 第三十一阶段：PDF 目录（书签）解析 + 可指定页码范围抽取（startPage / endPage）。
  *
  * 设计约束（本阶段）：
  *   - **只读**：只读文件库里已有的文件，不写回、不改用户数据；
@@ -53,6 +55,8 @@ const MIN_THUMB_WIDTH = 48
 const MAX_THUMB_WIDTH = 400
 /** 一次最多渲染多少张缩略图（防止一次渲染几十页把主进程卡住） */
 const MAX_THUMBS = 24
+/** 目录最大层数（畸形文件里可能有自引用 → 限深） */
+const MAX_OUTLINE_DEPTH = 8
 
 /** 文件库根目录（文件库 = <state>/file-library/files 下的平铺文件） */
 function libraryRoot(): string {
@@ -214,9 +218,20 @@ interface PdfPage {
   getViewport(opts: { scale: number }): PdfViewport
   render(opts: unknown): { promise: Promise<void> }
 }
+interface PdfOutlineItem {
+  title?: string
+  dest?: unknown
+  items?: PdfOutlineItem[]
+}
 interface PdfDocument {
   numPages: number
   getPage(n: number): Promise<PdfPage>
+  /** 目录（书签）；pdfjs 有，别的实现可能没有 → 用可选方法 + 运行时兜底 */
+  getOutline?(): Promise<PdfOutlineItem[] | null>
+  /** 命名目标 → 目标数组 */
+  getDestination?(id: string): Promise<unknown>
+  /** 页面引用 → 0 起的页序号 */
+  getPageIndex?(ref: unknown): Promise<number>
 }
 interface PdfjsModule {
   getDocument(opts: unknown): { promise: Promise<PdfDocument> }
@@ -1894,6 +1909,76 @@ export interface DocumentPreviewInput {
   name?: string
   maxPages?: number
   maxChars?: number
+  /** 起始页（1 起；第三十一阶段起可只抽一段页码范围） */
+  startPage?: number
+  /** 结束页（含） */
+  endPage?: number
+}
+
+/** 把页码夹到 [min, max]；非数字 / NaN 一律退回 fallback（不猜） */
+function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
+  const n = Math.floor(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(n, max))
+}
+
+/**
+ * 书签目标 → 页码（1 起）。
+ *
+ * pdfjs 给的 dest 有三种形态：
+ *   - 字符串（命名目标）→ 先 getDestination 换成目标数组；
+ *   - 目标数组 [页面引用, /XYZ, ...] → getPageIndex 把页面引用换成 0 起的页序号；
+ *   - 其它 → null（**不猜页码**：猜错了点了跳到别的页，比不跳更糟）。
+ */
+async function outlineDestPage(doc: PdfDocument, dest: unknown): Promise<number | null> {
+  let target = dest
+  if (typeof target === 'string') {
+    if (typeof doc.getDestination !== 'function') return null
+    try {
+      target = await doc.getDestination(target)
+    } catch {
+      return null
+    }
+  }
+  if (!Array.isArray(target) || target.length === 0) return null
+  const ref = target[0]
+  if (!ref || typeof ref !== 'object') return null
+  if (typeof doc.getPageIndex !== 'function') return null
+  try {
+    const index = await doc.getPageIndex(ref)
+    if (typeof index !== 'number' || !Number.isFinite(index) || index < 0) return null
+    return index + 1
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 读 PDF 目录（书签）→ 树。
+ * 解析失败一律当「没有目录」——目录是加分项，不该把整份预览拖垮。
+ */
+async function readPdfOutline(doc: PdfDocument): Promise<DocumentOutlineNode[]> {
+  if (typeof doc.getOutline !== 'function') return []
+  let items: PdfOutlineItem[] | null = null
+  try {
+    items = await doc.getOutline()
+  } catch {
+    return []
+  }
+  if (!Array.isArray(items) || items.length === 0) return []
+  const walk = async (list: PdfOutlineItem[], depth: number): Promise<DocumentOutlineNode[]> => {
+    // 畸形文件里可能有自引用 → 限深，不递归到爆栈
+    if (depth > MAX_OUTLINE_DEPTH) return []
+    const out: DocumentOutlineNode[] = []
+    for (const item of list) {
+      const title = normalizeText(typeof item?.title === 'string' ? item.title : '')
+      const page = await outlineDestPage(doc, item?.dest)
+      const children = Array.isArray(item?.items) ? await walk(item.items, depth + 1) : []
+      out.push({ title, page, children })
+    }
+    return out
+  }
+  return walk(items, 0)
 }
 
 /**
@@ -1914,7 +1999,8 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     pages: [],
     text: '',
     truncated: false,
-    error: null
+    error: null,
+    outline: []
   }
 
   const maxChars = Math.max(1, Math.min(input.maxChars ?? MAX_CHARS, MAX_CHARS))
@@ -1959,11 +2045,17 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     const pdfjs = loadPdfjs()
     const data = new Uint8Array(fs.readFileSync(resolved))
     const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise
+    const total = doc.numPages
+    // 第三十一阶段：可指定页码范围（startPage / endPage），越界一律夹住
+    // 不给 startPage → 从第 1 页起；不给 endPage → 到最后一页止（各自有自己的默认值）
+    const start = clampInt(input.startPage, 1, 1, total)
+    const end = clampInt(input.endPage, total, start, total)
+    const take = Math.min(end - start + 1, maxPages)
+    const lastPage = start + take - 1
     const pages: DocumentPreviewPage[] = []
     let chars = 0
     let truncated = false
-    const take = Math.min(doc.numPages, maxPages)
-    for (let i = 1; i <= take; i++) {
+    for (let i = start; i <= lastPage; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
       const text = itemsToText(content.items)
@@ -1974,14 +2066,19 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
         break
       }
     }
-    if (doc.numPages > take) truncated = true
+    const lastExtracted = pages.length ? pages[pages.length - 1].page : start
+    if (lastExtracted < total) truncated = true
+    const outline = await readPdfOutline(doc)
     return {
       ...base,
-      pageCount: doc.numPages,
+      pageCount: total,
       pages,
       text: pages.map((p) => p.text).join('\n\n'),
       truncated,
-      error: null
+      error: null,
+      pageStart: start,
+      pageEnd: lastExtracted,
+      outline
     }
   } catch (e) {
     const msg = String((e as Error)?.message ?? e)
