@@ -1305,7 +1305,8 @@ PDF 点开后先显示位图（`doc-preview-image` / `doc-preview-image-meta` / 
    支持 `cellIs`（greaterThan / greaterThanOrEqual / lessThan / lessThanOrEqual / equal / notEqual /
    between / notBetween）、`containsText` / `notContainsText` / `beginsWith` / `endsWith`；
    按 `priority` 升序、`stopIfTrue` 截断。**图形类规则**（colorScale / dataBar / iconSet）、
-   `expression`、top10 等**跳过**（不猜公式结果），不影响其它规则的输出。
+   `expression` **跳过**（不猜公式结果），不影响其它规则的输出；
+   **区间级规则**（top10 / aboveAverage / duplicateValues / uniqueValues）见 §5.36。
 
 **工具数不变**：仍是 **27**；**无新增依赖**。
 
@@ -1371,6 +1372,30 @@ PDF 点开后先显示位图（`doc-preview-image` / `doc-preview-image-meta` / 
     范围没覆盖全文时 `truncated` 为 true（内容不完整，如实说）。
 
 **工具数不变**：仍是 **27**（未新增工具）；**无新增依赖**。
+
+### 5.36 XLSX 区间级条件格式（top10 / 均值 / 重复值）
+
+第三十二阶段。§5.32 的条件格式只支持「看当前一个格子就能判定」的规则；
+Excel 里另一大类**必须看整段范围**的规则（Top 10、高于均值、高亮重复项）此前**一律静默丢弃**。
+
+- **top10**：`rank`（默认 10）取前 / 后 N 项；`percent="1"` 时 `rank` 是百分比
+  （取名次 = `ceil(个数 × 百分比)`）；`bottom="1"` 取最小的 N 项。
+  并列按「≥ 阈值」判定（bottom 为「≤ 阈值」）—— 名次不够时**多出来的一档也一起高亮**（与 Excel 一致）。
+- **aboveAverage**：范围内**数值**的均值；`aboveAverage="0"` 改为低于均值；
+  `equalAverage="1"` 把「恰好等于均值」也算命中；`stdDev="1"` 改成「偏离均值超过 1 个样本标准差」。
+- **duplicateValues / uniqueValues**：范围内出现两次 / 只出现一次的单元格。
+  文本比较**大小写不敏感**；**数字与文本不同类**（数字 `5` 与文本 `"5"` 不算重复）。
+- **多区域 sqref 按每段独立统计**：`sqref="A1:A5 C1:C5"` 时两段各自排名
+  （单区域是绝大多数情况，两种口径等价）。
+- **fail-safe**：范围内没有数值 / 数据不足 → 规则不命中（不猜）。
+
+**实现上的关键改动**：条件格式从「逐格判定」改成**三趟** ——
+①解析全部单元格 → ②按范围算出每条区间级规则的命中集合 → ③逐格套颜色。
+命中与否**预先算成一张「行:列 → 命中」表**，逐格渲染时查表。
+
+**输出通道不变**：仍走既有 `[颜色:X;底色:Y]` 标记 —— 不新增文本标记、不破坏既有输出。
+
+**工具数不变**：仍是 **27**；**无新增依赖**。
 
 ---
 
@@ -1470,7 +1495,11 @@ DOCX 表格首行作表头转 Markdown；工具数仍 27，见 §5.29）、
 **PDF 目录（书签）导航 + 页码范围抽取**（outline 多级书签 → 界面目录面板点击跳页；
 agent 侧 `ecclaw_document_preview` 新增可选 `startPage` / `endPage` 越界夹住、
 返回 `pageStart` / `pageEnd` / `outline`，范围不覆盖全文时 `truncated` 为 true；
-解析不出目标页码时 `page` 为 `null` 不猜；工具数仍 27，见 §5.35）。
+解析不出目标页码时 `page` 为 `null` 不猜；工具数仍 27，见 §5.35）、
+**XLSX 区间级条件格式**（top10 含 percent/bottom、aboveAverage 含 equalAverage/stdDev、
+duplicateValues / uniqueValues；判定前先按范围算命中集合，逐格渲染时查表；
+多区域 sqref 每段独立统计、数字与文本不同类、范围内无数据则不命中；
+输出仍走既有 `[颜色:X;底色:Y]` 不新增标记；工具数仍 27，见 §5.36）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

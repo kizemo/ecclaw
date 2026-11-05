@@ -877,6 +877,8 @@ interface XlsxCellRange {
 }
 
 interface XlsxCfRule {
+  /** 规则在清单里的稳定序号（区间级命中集合按它索引） */
+  id: number
   ranges: XlsxCellRange[]
   type: string
   operator: string
@@ -885,6 +887,16 @@ interface XlsxCfRule {
   dxfId: number
   stopIfTrue: boolean
   priority: number
+  /** top10：取前/后 N 项；`percent` 为真时 N 是百分比 */
+  rank: number
+  percent: boolean
+  bottom: boolean
+  /** aboveAverage：默认「高于均值」；`aboveAverage=false` 即低于均值 */
+  aboveAverage: boolean
+  /** aboveAverage：是否把「恰好等于均值」也算命中 */
+  equalAverage: boolean
+  /** aboveAverage：是否改成「偏离均值超过 1 个标准差」 */
+  stdDev: boolean
 }
 
 function parseCellPosition(ref: string): { col: number; row: number } | null {
@@ -914,7 +926,7 @@ function parseSqref(sqref: string): XlsxCellRange[] {
   return out
 }
 
-/** 工作表里的 `<conditionalFormatting>` → 规则清单（只收带 dxfId 的；图形类规则本阶段不处理） */
+/** 工作表里的 `<conditionalFormatting>` → 规则清单（只收带 dxfId 的；图形类规则 colorScale/dataBar/iconSet 与表达式仍不处理） */
 function parseConditionalFormatting(xml: string): XlsxCfRule[] {
   const out: XlsxCfRule[] = []
   for (const block of xml.matchAll(/<conditionalFormatting\b([^>]*)>([\s\S]*?)<\/conditionalFormatting>/g)) {
@@ -929,6 +941,7 @@ function parseConditionalFormatting(xml: string): XlsxCfRule[] {
         formulas.push(decodeXmlEntities(fm[1] ?? '').trim())
       }
       out.push({
+        id: out.length,
         ranges,
         type: /\btype="([^"]*)"/.exec(attrs)?.[1] ?? '',
         operator: /\boperator="([^"]*)"/.exec(attrs)?.[1] ?? '',
@@ -936,7 +949,13 @@ function parseConditionalFormatting(xml: string): XlsxCfRule[] {
         formulas,
         dxfId,
         stopIfTrue: /\bstopIfTrue="(?:1|true)"/i.test(attrs),
-        priority: Number(/\bpriority="(\d+)"/.exec(attrs)?.[1] ?? '0')
+        priority: Number(/\bpriority="(\d+)"/.exec(attrs)?.[1] ?? '0'),
+        rank: Number(/\brank="(\d+)"/.exec(attrs)?.[1] ?? '10'),
+        percent: /\bpercent="(?:1|true)"/i.test(attrs),
+        bottom: /\bbottom="(?:1|true)"/i.test(attrs),
+        aboveAverage: !/\baboveAverage="(?:0|false)"/i.test(attrs),
+        equalAverage: /\bequalAverage="(?:1|true)"/i.test(attrs),
+        stdDev: /\bstdDev="(?:1|true)"/i.test(attrs)
       })
     }
   }
@@ -951,7 +970,7 @@ function cfFormulaValue(formula: string): string {
   return text
 }
 
-/** 只支持确定性强的规则类型；图形类（colorScale/dataBar/iconSet）与表达式一律跳过（fail-safe） */
+/** 逐格判定的规则类型（确定性强的）；区间级类型走 rangeLevelCfMatches，图形类与表达式一律跳过（fail-safe） */
 function matchCfRule(rule: XlsxCfRule, text: string, num: number | null): boolean {
   const lower = text.toLowerCase()
   switch (rule.type) {
@@ -996,6 +1015,111 @@ function matchCfRule(rule: XlsxCfRule, text: string, num: number | null): boolea
   }
 }
 
+/* --------------------- 区间级条件格式（top10 / aboveAverage / 重复值） --------------------- */
+
+/**
+ * 区间级规则：判定要看整段范围的数据（排名 / 均值 / 出现次数），不能只靠当前格子的值。
+ * 这几类规则之前被静默丢弃（`matchCfRule` 只处理逐格判定的类型）。
+ */
+const RANGE_LEVEL_CF_TYPES = new Set(['top10', 'aboveAverage', 'duplicateValues', 'uniqueValues'])
+
+function isRangeLevelCf(type: string): boolean {
+  return RANGE_LEVEL_CF_TYPES.has(type)
+}
+
+/** 单元格坐标键（区间命中集合用） */
+function cfCellKey(row: number, col: number): string {
+  return `${row}:${col}`
+}
+
+/** 重复值比较键：数值与文本不同类；文本大小写不敏感（与 Excel 一致） */
+function dupKey(cell: { value: string; num: number | null }): string {
+  return cell.num !== null ? `n:${cell.num}` : `t:${cell.value.toLowerCase()}`
+}
+
+/** 样本标准差（n−1；Excel 的 stdDev 选项用的就是样本标准差） */
+function sampleStdDev(nums: number[]): number {
+  if (nums.length < 2) return 0
+  const avg = nums.reduce((s, n) => s + n, 0) / nums.length
+  const variance = nums.reduce((s, n) => s + (n - avg) ** 2, 0) / (nums.length - 1)
+  return Math.sqrt(variance)
+}
+
+/** 某个单元格在「本段范围」里是否命中这条区间级规则 */
+function matchRangeLevelCf(
+  rule: XlsxCfRule,
+  inRange: Array<{ value: string; num: number | null }>,
+  cell: { value: string; num: number | null }
+): boolean {
+  switch (rule.type) {
+    case 'top10': {
+      const nums = inRange.map((c) => c.num).filter((n): n is number => n !== null)
+      if (nums.length === 0 || cell.num === null) return false
+      // `percent` 时 rank 表示百分比，取名次 = ceil(个数 × 百分比)
+      const k = rule.percent
+        ? Math.max(1, Math.ceil((nums.length * rule.rank) / 100))
+        : Math.min(rule.rank, nums.length)
+      if (k < 1) return false
+      const sorted = [...nums].sort((a, b) => (rule.bottom ? a - b : b - a))
+      const threshold = sorted[k - 1]
+      // 并列取「≥ 阈值」（bottom 取「≤ 阈值」）
+      return rule.bottom ? cell.num <= threshold : cell.num >= threshold
+    }
+    case 'aboveAverage': {
+      const nums = inRange.map((c) => c.num).filter((n): n is number => n !== null)
+      if (nums.length === 0 || cell.num === null) return false
+      const avg = nums.reduce((s, n) => s + n, 0) / nums.length
+      const eps = 1e-9
+      if (rule.stdDev) {
+        const bound = rule.aboveAverage ? avg + sampleStdDev(nums) : avg - sampleStdDev(nums)
+        return rule.aboveAverage ? cell.num > bound + eps : cell.num < bound - eps
+      }
+      if (rule.aboveAverage) {
+        return cell.num > avg + eps || (rule.equalAverage && Math.abs(cell.num - avg) <= eps)
+      }
+      return cell.num < avg - eps || (rule.equalAverage && Math.abs(cell.num - avg) <= eps)
+    }
+    case 'duplicateValues':
+    case 'uniqueValues': {
+      if (cell.value === '') return false
+      const key = dupKey(cell)
+      let count = 0
+      for (const c of inRange) {
+        if (c.value !== '' && dupKey(c) === key) count++
+      }
+      return rule.type === 'duplicateValues' ? count >= 2 : count === 1
+    }
+    default:
+      return false
+  }
+}
+
+/**
+ * 为每条区间级规则算出「命中哪些格子」。
+ * 聚合范围 = 该规则 sqref 的每一段（多段时**各段独立**排名 —— Excel 对多区域选择的语义有歧义，
+ * 单区域是绝大多数情况，两者等价）。
+ */
+function rangeLevelCfMatches(
+  rules: XlsxCfRule[],
+  cells: Array<{ row: number; col: number; value: string; num: number | null }>
+): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>()
+  for (const rule of rules) {
+    if (!isRangeLevelCf(rule.type)) continue
+    const hits = new Set<string>()
+    for (const range of rule.ranges) {
+      const inRange = cells.filter(
+        (c) => c.row >= range.r1 && c.row <= range.r2 && c.col >= range.c1 && c.col <= range.c2
+      )
+      for (const c of inRange) {
+        if (matchRangeLevelCf(rule, inRange, c)) hits.add(cfCellKey(c.row, c.col))
+      }
+    }
+    out.set(rule.id, hits)
+  }
+  return out
+}
+
 /** 命中规则 → 字体色 / 底色（按 priority 升序；stopIfTrue 截断） */
 function conditionalColors(
   rules: XlsxCfRule[],
@@ -1003,7 +1127,8 @@ function conditionalColors(
   row: number,
   col: number,
   text: string,
-  num: number | null
+  num: number | null,
+  rangeMatches: Map<number, Set<string>>
 ): { font: string | null; fill: string | null } {
   let font: string | null = null
   let fill: string | null = null
@@ -1012,7 +1137,11 @@ function conditionalColors(
     .filter(({ rule }) => rule.ranges.some((r) => row >= r.r1 && row <= r.r2 && col >= r.c1 && col <= r.c2))
     .sort((x, y) => x.rule.priority - y.rule.priority || x.index - y.index)
   for (const { rule } of ordered) {
-    if (!matchCfRule(rule, text, num)) continue
+    // 区间级规则查预先算好的命中集合；逐格规则照旧按当前格子的值判定
+    const hit = isRangeLevelCf(rule.type)
+      ? (rangeMatches.get(rule.id)?.has(cfCellKey(row, col)) ?? false)
+      : matchCfRule(rule, text, num)
+    if (!hit) continue
     const dxf = styles.dxfs[rule.dxfId]
     if (dxf) {
       if (font === null) font = dxf.font
@@ -1700,15 +1829,24 @@ function excelSerialToParts(serial: number, date1904: boolean): SerialParts | nu
   }
 }
 
-/** 一个工作表的行 → 单元格文本（按列号定位，缺的列补空；有颜色时文本后附 `[颜色:…]`） */
+/**
+ * 一个工作表的行 → 单元格文本（按列号定位，缺的列补空；有颜色时文本后附 `[颜色:…]`）。
+ * 三趟：①解析全部单元格 → ②按整段范围算区间级条件格式的命中集合 → ③逐格套颜色后拼行。
+ */
 function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1904: boolean): string[] {
   interface Cell {
+    row: number
     col: number
     value: string
+    num: number | null
+    sectionColor: string | null
+    styleIdx: number
     font: string | null
     fill: string | null
   }
   const rows: Array<{ row: number; cells: Cell[] }> = []
+  /** 全部单元格（含空值）—— 区间级规则按范围取数时用 */
+  const allCells: Cell[] = []
   const fmtCache = new Map<number, string | null>()
   const fmtOf = (styleIdx: number): string | null => {
     if (!fmtCache.has(styleIdx)) fmtCache.set(styleIdx, resolveFormatCode(styles, styleIdx))
@@ -1767,21 +1905,33 @@ function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1
         }
       }
 
-      if (value === '') {
-        cells.push({ col, value, font: null, fill: null })
-        continue
-      }
-      // 优先级：条件格式 > 格式段颜色 > 静态字体色；底色来自条件格式或静态填充
-      const cf = conditionalColors(cfRules, styles, rowNo, col, value, num)
-      const staticColors = staticCellColors(styles, styleIdx)
-      cells.push({
+      const cell: Cell = {
+        row: rowNo,
         col,
         value,
-        font: cf.font ?? sectionColor ?? staticColors.font,
-        fill: cf.fill ?? staticColors.fill
-      })
+        num,
+        sectionColor,
+        styleIdx,
+        font: null,
+        fill: null
+      }
+      cells.push(cell)
+      allCells.push(cell)
     }
     rows.push({ row: rowNo, cells })
+  }
+
+  // 区间级规则（top10 / aboveAverage / 重复值 / 唯一值）要先拿整段范围的数据才能判定
+  const rangeMatches = rangeLevelCfMatches(cfRules, allCells)
+  for (const r of rows) {
+    for (const cell of r.cells) {
+      if (cell.value === '') continue
+      // 优先级：条件格式 > 格式段颜色 > 静态字体色；底色来自条件格式或静态填充
+      const cf = conditionalColors(cfRules, styles, cell.row, cell.col, cell.value, cell.num, rangeMatches)
+      const staticColors = staticCellColors(styles, cell.styleIdx)
+      cell.font = cf.font ?? cell.sectionColor ?? staticColors.font
+      cell.fill = cf.fill ?? staticColors.fill
+    }
   }
 
   const out: string[] = []
