@@ -325,6 +325,19 @@
 > 全量回归 `run77-*`（phase3r C3 为事件库 >2000 条既有环境失败；phase4o 一条位置锁死断言因
 > 新增文档级行而过期，改成顺序断言后全绿，零产品改动）。交接见 `handoff-ecclaw-phase4s-final-2026-11-07.md`。
 
+> **第四十五阶段（三格式图表文本化 + SmartArt + XLSX 数据透视表 + PPTX 现代线程批注）已完成并真机验证（`phase4t-e2e.cjs` **29/29** 全绿 + 自测 **26/26**）**：
+> Office 文档的**图表**此前只出像素不出字 → 三格式 `chartN.xml` 统一文本化
+> `[图表: 标题 · 系列1, 系列2]`（标题只取图表级 `c:title`，坐标轴标题不算；
+> 系列名取 `c:ser/c:tx`；`strRef` 无缓存值时按 `c:f` 公式回查原表单元格 → openpyxl 文件也能出系列名）；
+> **SmartArt** 整块丢失 → `diagrams/dataN.xml` 出 `[SmartArt: 节点1, 节点2]`；
+> **数据透视表**看不到字段 → `xl/pivotTables/*` 出表末 `[透视表: 名称 · 字段: …]`；
+> PowerPoint 2019 之后的**现代线程批注**只读了一半 → `ppt/comments/modernCommentN.xml` +
+> 演示者级 `ppt/authors.xml` 出 `[批注(作者): …] [回复(作者): …]`（两代写法都认，多级回复摊平挂根）。
+> 落位：DOCX 挂图表所在段落、PPTX 挂 graphicFrame 位置、XLSX 挂所属工作表末尾。
+> 无这些部件的文档输出**逐字不变**（回归红线断言锁死）。只改 `document-preview.ts`，工具数仍 27。
+> 全量回归 `run78-*`（唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与 phase4t 无关）。
+> 交接见 `handoff-ecclaw-phase4t-final-2026-11-07.md`。
+
 ## 第二十三阶段（2026-11-04）：PPTX / XLSX 抽取 ✅
 
 | # | 交付项 | 状态 | 证据 |
@@ -664,6 +677,50 @@
 - `previewDocument` 只收文件库内路径 → 秒级自测对真 fixture 必须先拷进文件库；
   DOCX **没有导出函数**，只能走 `previewDocument`（XLSX 可直调导出的 `extractXlsxText`）。
 - 线程批注的 `id=` 正则靠大小写天然避开 `personId` / `parentId`（都大写 Id）。
+
+## 第四十五阶段（2026-11-07）：三格式图表 / SmartArt / 数据透视表 / PPTX 现代线程批注 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **共享解析层**（新增，放 PPTX/XLSX 抽取区之前）：
+   `xmlElements()` 按**本地名**取元素（忽略命名空间前缀、不限深度、同名嵌套按栈配对）；
+   `joinXmlTexts()` 只收前缀 `a` 或无前缀的 `<a:t>`（否则 `<dgm:t>` 会把内层 XML 当文字）；
+   `parseChartInfo()` → `{ title, series }`（标题只取 `c:plotArea` **之前**的图表级 `c:title`；
+   系列名取 `c:ser/c:tx`）；`chartMarker()` / `smartArtMarker()` / `pivotTableMarker()`；
+   `graphicRefMarks()`（DOCX 段落与 PPTX graphicFrame 共用的引用扫描）。
+2. **DOCX**：`word/charts/chartN.xml`、`word/diagrams/dataN.xml` → `DocxParts.graphics`；
+   `docxGraphicMarkMap()` 按 rels 类型 `/chart`、`/diagramData` 建 r:id → 标记映射；
+   标记挂在**图表所在段落**（段落无文字时自成一块）。
+3. **PPTX**：`ppt/charts/chartN.xml`、`ppt/diagrams/dataN.xml` → `PptxParts.graphics`；
+   `p:graphicFrame` 分支在表格后追加图表 / SmartArt 标记；
+   `PPTX_AUTHORS_RE` 放宽到演示者级 `ppt/authors.xml` 与 `ppt/authors/p188.xml`；
+   `parsePptxComments()` 重写为认两代现代批注（`2018/8/main` 的 `p188:replyLst/p188:reply`
+   与 `2018/annotation` 的 `paraIdParent`），多级回复摊平挂根，父未知按独立批注；
+   `pptxCommentMarks()` 统一出 `[批注(…)]` / `[回复(…)]`。
+4. **XLSX**：`xlsxSheetGraphics()`——图表走**两层关系**（工作表 → `xl/drawings/drawingN.xml` →
+   `xl/charts/chartN.xml`），透视表走一层（工作表 rels + sheet 的 `<pivotTablePart r:id>`）；
+   两者挂在**所属工作表末尾**。
+5. **系列名兜底**：`strRef` 没写缓存值时（openpyxl 不写 `strCache`）按 `c:f` 公式
+   （`'数据'!B1` / `Sheet1!$B$1`）回查原表单元格 → `parseChartFormula()` + 全工作簿单元格索引
+   （`extractXlsxText()` 改成两趟：先攒单元格索引，再出块）。
+
+**第四十五阶段实证发现**：
+- **候选清单第 10 次过期**：B 组图表早已被前几轮标为「已覆盖」，实为**只出像素不出字**；
+  探针复验（probe4p 的 b2/b4/b7）三格式图表命中数从 0 → 全命中。
+- **伪缺口别去修**：`mc1.pptx`（`ppt/threadedComments/threadedComment_1.xml` + `mc:AlternateContent`）、
+  `sa1.pptx`（缺 `ppt/slides/_rels/slide1.xml.rels`）、`pv1.xlsx`（孤儿 pivotTable 部件，
+  sheet 里没有 `<pivotTableParts>`）都是**夹具缺陷**，真实文件必有对应关系；
+  补正夹具 `sa3.pptx` / `pv2.xlsx` / `mc2.pptx` / `mc3.pptx` 全部命中。
+- **现代批注的作者表在演示者级**（`/ppt/authors.xml`），不在幻灯片 rels 里；
+  `PPTX_AUTHORS_RE` 原来只认 `ppt/authors/*.xml`，会把演示者级文件漏掉。
+- **openpyxl 写的图表没有 `strCache`**：系列名只存在于 `c:f` 公式指向的单元格里，
+  必须回查原表才能出系列名（Excel 自己存的文件有缓存值，两条路都得走）。
+- `xmlElements`（不限深度、按本地名）与 `xmlChildElements`（只取直接子级、按固定容器标签）
+  语义不同，新代码别混用。
+
+**验证**：`phase4t-selftest.cjs` **26/26**（三格式图表 / 真结构与边界 / SmartArt / 透视表 /
+线程批注 / 负向逐字一致 / 坏部件容错）；`phase4t-e2e.cjs` **29/29**（`run78-phase4t.log`）；
+旧自测 4a~4s 全绿；全量回归 `run78-*` 三十一套，唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 

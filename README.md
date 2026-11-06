@@ -1724,6 +1724,29 @@ WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
 - **回归红线**：没有这些部件的文档，输出与改动前**逐字一致**。
 - **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
 
+### 5.49 图表 / SmartArt / 数据透视表 / PPTX 现代线程批注（第四十五阶段）
+
+补四条「图形内容轴」真缺口：Office 文档里的**图表**只出像素不出字，**SmartArt** 整块丢失，
+**数据透视表**看不到字段，PowerPoint 2019 之后的**现代线程批注**只被当成普通批注读了一半。
+
+- **图表（三格式）**：`word/charts/chartN.xml`（DOCX）、`ppt/charts/chartN.xml`（PPTX）、
+  `xl/charts/chartN.xml`（XLSX）→ `[图表: 月度销售趋势图 · 销售额系列]`；
+  标题只取**图表级**的 `c:title`（在 `c:plotArea` 之前那段，坐标轴标题不算），
+  认 `c:tx/c:rich` 富文本与 `c:tx/c:strRef` 缓存值两种写法；
+  系列名取 `c:ser/c:tx`（`strRef` 缓存值或字面量 `c:v`）；
+  `strRef` 没写缓存值时（openpyxl 就不写 `strCache`）按 `c:f` 公式（`'数据'!B1`）**回查原表单元格**。
+- **SmartArt**：`word/diagrams/dataN.xml`（DOCX）、`ppt/diagrams/dataN.xml`（PPTX）→
+  `[SmartArt: 需求调研, 方案设计]`；文本取 `dgm:pt` 里的 `a:t`，`type="doc"` 的根节点不算内容。
+- **数据透视表**：工作表 rels 指向的 `xl/pivotTables/pivotTableN.xml`（靠 sheet 里的
+  `<pivotTablePart r:id>`）→ 工作表末尾 `[透视表: 销售透视表 · 字段: 品类, 金额]`。
+- **PPTX 现代线程批注**：`ppt/comments/modernCommentN.xml` 的 `p188:cm` +
+  演示者级 `ppt/authors.xml` 作者表 → `[批注(作者): 正文]` + `[回复(作者): 正文]`；
+  两代写法都认（`2018/8/main` 的 `p188:replyLst/p188:reply` 与
+  `2018/annotation` 的 `paraIdParent`）；多级回复**摊平挂根**批注，父批注找不到时按独立批注输出。
+- **落位**：DOCX 挂**图表所在段落**、PPTX 挂 **graphicFrame 所在位置**、XLSX 挂**所属工作表末尾**。
+- **回归红线**：没有这些部件的文档，输出与改动前**逐字一致**。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
 ---
 
 ## 6. 技能与文件库
@@ -1903,7 +1926,13 @@ PPTX / XLSX 元数据行与正文紧邻不插空行；畸形 XML 不影响正文
 `xl/threadedComments/*` + `xl/persons/person.xml` → 格内 `[批注(作者): …] [回复(作者): …]`
 （回复摊平挂根、决议态标「(已解决)」/「(已接受)」、父未知按独立批注）；
 另补 DOCX 图片 alt 第三兜底源 `pic:cNvPr@descr`（`descr → title → cNvPr@descr`）；
-没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.48）。
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.48）、
+**图表 / SmartArt / 数据透视表 / PPTX 现代线程批注**（三格式 `chartN.xml` → `[图表: 标题 · 系列1, 系列2]`
+（标题只取图表级 `c:title`，系列名取 `c:ser/c:tx`，`strRef` 无缓存值时按 `c:f` 公式回查单元格）；
+`diagrams/dataN.xml` → `[SmartArt: 节点1, 节点2]`；`xl/pivotTables/*` → 表末
+`[透视表: 名称 · 字段: …]`；`ppt/comments/modernCommentN.xml` + `ppt/authors.xml` →
+`[批注(作者): …] [回复(作者): …]`（两代写法都认，多级回复摊平挂根）；
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.49）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，
