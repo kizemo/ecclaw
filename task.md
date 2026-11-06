@@ -285,6 +285,18 @@
 > 秒级自测 **18/18**；e2e **22/22**；全量回归 run74 二十八套 **958 PASS / 1 FAIL** ——
 > 唯一失败 phase3r C3 为**事件库超 2000 条**的既有环境问题（非产品回归）；其余二十七套全绿（未跑真站 phase3s/3q）。
 > 功能提交 **`7001922`**；交接见 `handoff-ecclaw-phase4p-final-2026-11-06.md`。
+> **第四十二阶段（docProps 扩展：app.xml + custom.xml）已完成并真机验证（`phase4q-e2e.cjs` **22/22** 全绿）**：
+> §5.44 只读了 `docProps/core.xml`，同目录的 `app.xml`（应用 / 公司 / 页数 / 字数）与
+> `custom.xml`（用户自定义属性）此前整份跳过。本轮把 **core + app 合成同一行**
+> `[文档信息] 标题 · 作者 · 修改人 · 修改时间 · 应用 · 公司 · 页数 · 字数`，
+> **custom 单独一行** `[自定义属性] 名称: 值 · 名称: 值`；
+> **空字段逐个省略、全空不出行**，没有 app/custom 的文档输出与改动前**逐字一致**；
+> 三格式共用同一套解析（部件路径相同），**按本地名匹配**不硬编码 XML 前缀，
+> `vt:vector` 多段值按 `A, B` 拼接、空名/空值跳过。
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **23/23**；e2e **22/22**；全量回归 run75 二十九套 **980 PASS / 1 FAIL**（摘要 `run75-summary.txt`），
+> 唯一失败 phase3r C3 为**事件库超 2000 条**的既有环境失败（非产品回归），其余二十八套全绿；未跑真站 phase3s/3q。
+> 交接见 `handoff-ecclaw-phase4q-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -580,6 +592,30 @@
    → 显式 `continue` 跳过。
 8. **一页可能有多个批注部件**：`relTargetByType()` 只返回第一个（留给备注页用），
    批注必须用新加的 `relTargetsByType()` 取全部。
+
+## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | `phase4p-probe.cjs` 实测 b3/b6/b8 三格式 fixture 各缺 4/4（Application / Company / 2 条自定义属性）；既有套件 fixture 无 app.xml（grep 确认），改动不会污染旧期望 |
+| 2 | 解析 | ✅ | 新增 `DOC_APP_PROPS_ENTRY` / `DOC_CUSTOM_PROPS_ENTRY` / `parseAppProps()` / `parseCustomProps()` / `docPropsLines()`；三格式读取部件时一并解出 app/custom；**按本地名匹配**，XML 实体解码 |
+| 3 | 落位与输出 | ✅ | core + app 合成一行 `[文档信息] … 应用 · 公司 · 页数 · 字数`；custom 单独一行 `[自定义属性] 名称: 值 · …`，紧跟其后；DOCX 在页眉前、PPTX 在 `[幻灯片 1]` 前、XLSX 在 `[工作表 …]` 前 |
+| 4 | 容错与边界 | ✅ | 空字段逐个省略、全空不出行；无 app/custom 输出逐字不变；畸形 `app.xml` 不抛异常、不出半截值；`vt:vector` 按 `A, B` 拼接；空名/空值跳过；PPTX `<Slides>` 不输出（与实际页数重复） |
+| 5 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` 不动 → **MCP 工具数仍 27**；**无新增依赖**；无 UI 改动 |
+| 6 | 自测 + e2e + 回归 | ✅ | `phase4q-selftest.cjs` **23/23**（合并 / 仅 app / 仅 custom / 无 docProps / 空部件 / 三格式落位 / 任意前缀 / 实体 / 畸形 / vector / 截断）；`phase4q-e2e.cjs` **22/22** → `run75-phase4q.log`；全量回归 run75 二十九套 **980 PASS / 1 FAIL**（`run75-summary.txt`）：唯一失败 phase3r C3 仍为事件库超 2000 条的既有环境失败，其余二十八套全绿；未跑真站 phase3s/3q |
+
+第四十二阶段实证发现：
+
+1. **`Application` 的值因厂商而异**：`Microsoft Office Word` / `Microsoft Word` / `LibreOffice` 都常见。
+   探针里把预期写成 `Microsoft PowerPoint`、fixture 写 `Microsoft Office PowerPoint`，就产生一条假红 ——
+   断言别把厂商串写死。
+2. **`custom.xml` 的值类型任意**：`vt:lpwstr` / `vt:lpstr` / `vt:bool` / `vt:date` … 不能只认一种；
+   先剥标签再解实体即可，`vt:vector` 的多段值要按 `A, B` 拼。
+3. **app.xml / custom.xml 与 core.xml 同路径**（`docProps/`），三格式共用一套解析与同一套空值规则。
+4. **新增元数据会改变所有带 app.xml 的既有输出**：本轮 grep 过全部 e2e 脚本，只有
+   `phase4p-make.cjs` 造了 app.xml，既有套件 fixture 都没有 → 回归不受影响；
+   以后给旧 fixture 补 app.xml 必须同步改断言。
+5. **PPTX 的 `<Slides>` 不输出**：它可能与实际幻灯片数不一致，输出两个数字会打架；真实页数以抽取结果为准。
 
 ## 第四十一阶段（2026-11-06）：PDF 链接 / 注释 / 表单域 / 元数据 ✅
 
