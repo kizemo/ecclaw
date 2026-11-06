@@ -2,7 +2,7 @@
 
 > **状态**：功能完成并真机验证 —— 改码 ✅ / 自测 17/17 ✅ / 交叉复验全绿 ✅ /
 > typecheck ✅ / build ✅ / e2e **17/17** ✅ / 全量回归 run73 二十六套全绿 + 1 条既有环境失败（见 §2）。
-> 文档 ✅；提交待做（§5）。
+> 文档 ✅；功能提交 = **`d00268b`**。
 
 ## 1. 本轮交付
 
@@ -55,11 +55,11 @@
   `<bridge>` = `.../.openclaw/host-bridge.json`；回归脚本 `C:/Temp/ecclaw-verify/rerun-and-regress25.cjs`
 - 改主进程后必须重启 Electron（`C:/Temp/ecclaw-verify/start-electron.ps1`；先杀干净所有 electron.exe）
 
-## 5. 收尾待办
+## 5. 提交
 
-1. 精确 `git add` 上述产品/文档文件（**不要** add `handoff-2026-11-06.md` 占位文件、`C:\Temp\*`、`openclaw.json`、`host-bridge.json`）。
-2. `feat(document-preview): add core document properties for DOCX/XLSX/PPTX`
-3. 用新提交 hash 单独一条 `docs:` 回填本 handoff §5 与 task.md 顶部。
+- 功能 + 文档提交 = **`d00268b`** `feat(document-preview): add core document properties for DOCX/XLSX/PPTX`
+  （5 文件：产品 / README / task / handoff / prompt；**未**包含 `handoff-2026-11-06.md` 占位文件）。
+- 本条 `docs:` 提交回填 hash。
 
 ## 6. 下一轮候选（**已过期 7 次，必须重新探针**）
 

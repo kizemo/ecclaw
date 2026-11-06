@@ -271,7 +271,7 @@
 > e2e **17/17**；全量回归 run73 二十七套 **936 PASS / 1 FAIL** —— 唯一失败是 phase3r 的 C3，
 > 根因为**事件库已超 2000 条而回放硬上限 2000**（`host-events.ts:409`）导致参照样本被截断，
 > 与本轮改动无关（本轮只动 `document-preview.ts`）；其余二十六套全绿（未跑真站 phase3s/3q）。
-> 交接见 `handoff-ecclaw-phase4o-final-2026-11-06.md`。
+> 功能提交 **`d00268b`**；交接见 `handoff-ecclaw-phase4o-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
