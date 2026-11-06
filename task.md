@@ -209,6 +209,21 @@
 > 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
 > 秒级自测 **27/27**；e2e **35/35**；✅ **全量回归 run69 二十三套 755/755 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4k-final-2026-11-06.md`。
+> **第三十七阶段（DOCX / XLSX 链接与批注 · 超链接目标 + 审阅意见）已完成并真机验证（`phase4l-e2e.cjs` **37/37** 全绿）**：
+> §5.27 起超链接的**目标 URL** 与批注的**审阅意见**整条丢失（DOCX 的 `w:hyperlink` / XLSX 的 `<hyperlink>` 只留显示文本，
+> 链接指向哪里不可知；`word/comments.xml` / `xl/commentsN.xml` **完全不读**，审阅人的意见在 agent 眼里根本不存在）——
+> 这两类是**不可再生信息**（条件格式 / 图表属表现层，丢了还能重算；URL 与审阅意见丢了就真没了），本轮补回：
+> **XLSX 链接**走 `<hyperlink ref r:id>` → `xl/worksheets/_rels/sheetN.xml.rels` 的 Target（外部 URL 原样、
+> 内部 `location="Sheet2!A1"` 原样，**区间 ref 区内每格都挂**，展开上限 `MAX_LINK_CELLS` = 4096 格）；
+> **XLSX 批注**按 `<comment ref authorId>` 精确匹配单元格、作者取 `<authors>` 对应名、**同格多条批注全列**，
+> 部件路径优先取 sheet rels 里 Type 以 `/comments` 结尾者、**兜底按命名约定找 `xl/comments{N}.xml`**（工具产出的文件常不写 sheet rels）；
+> **DOCX 链接**走 `w:hyperlink r:id` → `word/_rels/document.xml.rels`、`w:anchor` → `#锚点`；
+> **DOCX 批注**走 `word/comments.xml` 的 `w:comment w:id w:author` + 正文 `w:commentRangeStart` 落到**所在段落**；
+> 标记为 `[链接: <目标>]` / `[批注(<作者>): <正文>]`，顺序 **宿主文本 → 链接 → 批注 → 颜色标记仍在最末**（既有输出前缀逐字不变）；
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **41/41**（另交叉复验 phase4j **30/30** / phase4k **27/27** —— 既有 DOCX / PPTX 输出逐字不变）；
+> e2e **37/37**；✅ **全量回归 run70 二十四套 792/792 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4l-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -408,6 +423,38 @@
 7. **调试断点要靠复刻扫描器定位**：`dbg-4k.cjs` 复刻一份 `xmlChildElements` 逐步打印
    「cSld 找到几个 / spTree 找到几个 / 子形状标签列表」，**比在产品代码里插日志快**（且不污染工作区）。
 8. **NFKC 归一化会改中文全角标点**：期望值里的「，」「。」在输出里是「,」「.」→ 断言按**实际输出**写。
+
+## 第三十七阶段（2026-11-06）：DOCX / XLSX 链接与批注（超链接目标 + 审阅意见） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 承接 phase4k handoff §4 候选清单，**第 4 次被推翻** —— 实测 9 条轴后选定「链接 + 批注」；理由：URL / 审阅意见是**不可再生信息**，条件格式 / 图表属表现层 |
+| 2 | 公共关系层 | ✅ | 新 `RelEntry` 接口 + `parseRelEntries(xml)`（Id / Target / **Type**，Target 走 `decodeXmlEntities`）；`parseRels()` 改为在其之上的**薄封装**（**行为不变**）；新 `isExternalTarget()`（`/^[a-zA-Z][a-zA-Z0-9+.\-]*:/`）—— 外部 Target 不能过 `resolveRelTarget()`（`https://…` 会被当 zip 内路径拼坏） |
+| 3 | XLSX 超链接 | ✅ | `<hyperlink ref r:id>` → `xl/worksheets/_rels/sheetN.xml.rels` 的 Target（外部 URL 原样、内部 `location=` 原样）；**ref 是区间时区内每格都挂**（`xlsxRefCellKeys()`，上限 `MAX_LINK_CELLS` = 4096 格防爆炸）；`parseXlsxHyperlinks()` / `xlsxCellExtras()` |
+| 4 | XLSX 批注 | ✅ | `xl/commentsN.xml` 的 `<comment ref authorId>` 按 ref **精确匹配**单元格、作者取 `<authors>` 里 `authorId` 对应名、**同格多条按出现顺序全列**；部件路径**优先**取 sheet rels 里 Type 以 `/comments` 结尾者，**兜底按命名约定找 `xl/comments{N}.xml`**（N 取工作表序号）—— 工具产出的文件常不写 sheet rels |
+| 5 | DOCX 超链接 | ✅ | `<w:hyperlink r:id>` → `word/_rels/document.xml.rels` 的 Target；`<w:hyperlink w:anchor="书签">` → `#书签`；`docxHyperlinkTargets()` |
+| 6 | DOCX 批注 | ✅ | `word/comments.xml` 的 `<w:comment w:id w:author>` + 正文里 `<w:commentRangeStart w:id>` **所在段落**；`parseDocxComments()` / `docxCommentIds()` / `docxExtras()`；段落文本为空但有批注时**只输出批注** |
+| 7 | 落位与顺序 | ✅ | **宿主文本 → 链接 → 批注 → 颜色标记仍在最末**（既有输出前缀逐字不变）；XLSX 挂在单元格值后（`parseXlsxSheet()` 的 `filled` 过滤改为「有值 **或** 有标记」，否则纯标记格会被丢掉）；DOCX 挂在段落文本后（`#` 标题前缀之后），表格单元格内走 `markdownCell()` 转义 |
+| 8 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` **全不动** → **MCP 工具数仍 27**、仍无必填参数；**无新增依赖**；**无链接无批注的文件输出逐字不变** |
+| 9 | e2e + 回归 | ✅ | `phase4l-selftest.cjs` **41/41**（4 夹具整行相等 + 行数 + kind + error + 正向标记计数 + 负向「无标记文档不产生标记」）；交叉复验 `phase4j-selftest.cjs` **30/30** / `phase4k-selftest.cjs` **27/27**（既有 DOCX / PPTX 输出逐字不变）；`phase4l-e2e.cjs` **37/37**（工具面 3 · 抽取 21 · 负向 7 · 界面 6；产物 `run70-phase4l.log`）；**全量回归 run70 二十四套 792/792 全绿**（4l 37 · 4k 35 · 4j 39 · 4i 53 · 4h 48 · 4g 30 · 4f 26 · 4e 21 · 4d 31 · 4c 26 · 4b 18 · 4a 20 · 3z 37 · 3y 31 · 3x 41 · 3w 27 · 3v 29 · 3u 24 · 3t 16 · 3r 31 · 3p 45 · 3o 44 · 3m 69 · sse 14，FAIL 全 0；摘要 `run70-summary.txt`）。未跑真站 phase3s/3q |
+
+第三十七阶段实证发现：
+
+1. **候选清单会过期 —— 这是第 4 次**：phase4k handoff §4 的清单第 4 次被实测推翻。
+   **先探针扫新轴再选题**，别照抄上一轮的清单（9 条轴实测：expression 条件格式解析了但永不命中、
+   colorScale/dataBar/iconSet 整条丢弃、超链接 URL 丢失、批注部件完全不读、合并单元格其实已隐式处理）。
+2. **`parseRels()` 只返回 Target 就认不出「哪条关系是 comments 部件」** → 必须拆出带 `Type` 的
+   `parseRelEntries()`，`parseRels()` 做薄封装保持行为不变（PPTX 备注那套仍在用）。
+3. **XLSX 批注部件可能根本不在 sheet rels 里**：真实 Excel 由 sheet rels 指向 `commentsN.xml`，
+   但工具产出的文件**不写 rels** → 必须留**命名约定兜底**（`xl/comments{N}.xml`，N = 工作表序号），
+   **两条路径都要有测试覆盖**（probe-comment.xlsx 走 rels / probe-comment2.xlsx 走兜底）。
+4. **外部 Target 不能过 `resolveRelTarget()`**：`https://…` 会被当 zip 内相对路径拼坏 →
+   先判 `isExternalTarget()` 再决定走哪条路。
+5. **「有值 或 有标记」的过滤改动容易被漏**：纯批注格**没有值**，若 `filled` 仍按「有值」过滤 → 批注整格消失。
+6. **区间 ref 要逐格展开**：`A2:A3` 的链接挂在**两格**上，不是只挂首格；展开上限防恶意大区间打爆内存。
+7. **DOCX 批注要认 `w:commentRangeStart` 所在段落**：批注正文在 `comments.xml`，**落位**靠正文里的 range 标记，
+   只读 comments.xml 会得到一堆无处安放的批注。
+8. **改完正则常量立刻 typecheck**：一次 Edit 漏了收尾 `/` → `TS1161: Unterminated regular expression literal`。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 

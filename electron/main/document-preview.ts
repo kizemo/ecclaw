@@ -343,8 +343,10 @@ const DOCX_NUMBERING_ENTRY = 'word/numbering.xml'
 const DOCX_FOOTNOTES_ENTRY = 'word/footnotes.xml'
 const DOCX_HEADER_RE = /^word\/header\d*\.xml$/
 const DOCX_FOOTER_RE = /^word\/footer\d*\.xml$/
+const DOCX_RELS_ENTRY = 'word/_rels/document.xml.rels'
+const DOCX_COMMENTS_ENTRY = 'word/comments.xml'
 
-/** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注 + 页眉页脚 */
+/** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注 + 页眉页脚 + 超链接关系 + 批注 */
 interface DocxParts {
   document: string
   styles: string
@@ -352,6 +354,8 @@ interface DocxParts {
   footnotes: string
   headers: string[]
   footers: string[]
+  rels: string
+  comments: string
 }
 
 /** 缩进哨兵：归一化会把连续空格压成一个，所以先用哨兵占位，最后再还原成空格 */
@@ -618,12 +622,16 @@ function docxRunsText(runs: DocxRun[]): string {
   return parts.join('')
 }
 
-/** DOCX 渲染上下文（样式表 / 编号表 / 计数器 / 脚注序号） */
+/** DOCX 渲染上下文（样式表 / 编号表 / 计数器 / 脚注序号 / 超链接 / 批注） */
 interface DocxRenderCtx {
   styles: Map<string, DocxStyleInfo>
   numbering: DocxNumbering
   counters: Map<string, number[]>
   footnoteNumbers: Map<string, number>
+  /** r:id → 超链接目标（外部 URL 或锚点） */
+  hyperlinks: Map<string, string>
+  /** 批注 id → {作者, 正文} */
+  comments: Map<string, { author: string; text: string }>
 }
 
 /**
@@ -637,8 +645,9 @@ function renderDocxParagraph(
 ): string {
   const props = docxParagraphProps(paragraph, ctx.styles)
   const text = docxRunsText(docxRuns(paragraph, ctx.footnoteNumbers))
-  if (!text.trim()) return ''
-  if (!structure) return text.trim()
+  const extras = docxExtras(paragraph, ctx)
+  if (!text.trim()) return extras.trim()
+  if (!structure) return text.trim() + extras
   let prefix = ''
   if (props.headingLevel !== null) {
     prefix = '#'.repeat(Math.min(props.headingLevel, 6)) + ' '
@@ -646,7 +655,7 @@ function renderDocxParagraph(
     const label = docxListLabel(ctx.numbering, props.numId, props.ilvl, ctx.counters)
     if (label) prefix = DOCX_INDENT.repeat(2 * props.ilvl) + label + ' '
   }
-  return (prefix + text).trim()
+  return (prefix + text).trim() + extras
 }
 
 /** 脚注引用编号：按正文出现顺序给 1、2、3… */
@@ -673,6 +682,62 @@ function parseDocxFootnotes(xml: string): Map<string, string> {
     if (paras.length > 0) map.set(id, paras.join(' '))
   }
   return map
+}
+
+/** 段落里的超链接目标（按出现顺序）：r:id 查 rels 的 Target；w:anchor 用 #锚点 */
+function docxHyperlinkTargets(paragraph: string, rels: Map<string, string>): string[] {
+  const out: string[] = []
+  for (const m of paragraph.matchAll(/<w:hyperlink\b([^>]*)>/g)) {
+    const attrs = m[1] ?? ''
+    const rid = /\br:id="([^"]*)"/.exec(attrs)?.[1]
+    const anchor = /\bw:anchor="([^"]*)"/.exec(attrs)?.[1]
+    const target = rid ? rels.get(rid) : undefined
+    if (target) out.push(target)
+    else if (anchor) out.push(`#${anchor}`)
+  }
+  return out
+}
+
+/** 段落里批注范围的起始 id（<w:commentRangeStart w:id="N"/>） */
+function docxCommentIds(paragraph: string): string[] {
+  const out: string[] = []
+  for (const m of paragraph.matchAll(/<w:commentRangeStart\b[^>]*\bw:id="([^"]*)"/g)) {
+    out.push(m[1] ?? '')
+  }
+  return out
+}
+
+/** comments.xml → 批注 id → {作者, 正文}（正文只取纯文本，不带粗斜体标记） */
+function parseDocxComments(xml: string): Map<string, { author: string; text: string }> {
+  const map = new Map<string, { author: string; text: string }>()
+  if (!xml) return map
+  for (const m of xml.matchAll(/<w:comment\b([^>]*)>([\s\S]*?)<\/w:comment>/g)) {
+    const id = /\bw:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    if (!id) continue
+    const author = /\bw:author="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? ''
+    const paras: string[] = []
+    for (const p of docxChildElements(m[2] ?? '', ['w:p'])) {
+      const t = docxParagraphText(p.body).trim()
+      if (t) paras.push(t)
+    }
+    const text = paras.join(' ')
+    if (!text) continue
+    map.set(id, { author, text })
+  }
+  return map
+}
+
+/** 段落末尾附加的链接 / 批注标记（没有就返回空串） */
+function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
+  const parts: string[] = []
+  for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
+    parts.push(`[链接: ${target}]`)
+  }
+  for (const id of docxCommentIds(paragraph)) {
+    const c = ctx.comments.get(id)
+    if (c) parts.push(`[批注(${c.author}): ${c.text}]`)
+  }
+  return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
 
 /** 页眉/页脚部件 → 文本行（纯文本，不带结构标记） */
@@ -840,7 +905,9 @@ function extractDocxText(parts: DocxParts): string {
     styles: parseDocxStyles(parts.styles),
     numbering: parseDocxNumbering(parts.numbering),
     counters: new Map<string, number[]>(),
-    footnoteNumbers: docxFootnoteNumbers(parts.document)
+    footnoteNumbers: docxFootnoteNumbers(parts.document),
+    hyperlinks: parseRels(parts.rels),
+    comments: parseDocxComments(parts.comments)
   }
   const footnotes = parseDocxFootnotes(parts.footnotes)
   const blocks: string[] = []
@@ -899,6 +966,8 @@ function readDocxParts(filePath: string): DocxParts {
       n === DOCX_STYLES_ENTRY ||
       n === DOCX_NUMBERING_ENTRY ||
       n === DOCX_FOOTNOTES_ENTRY ||
+      n === DOCX_RELS_ENTRY ||
+      n === DOCX_COMMENTS_ENTRY ||
       DOCX_HEADER_RE.test(n) ||
       DOCX_FOOTER_RE.test(n)
   )
@@ -913,7 +982,9 @@ function readDocxParts(filePath: string): DocxParts {
     numbering: dec(files[DOCX_NUMBERING_ENTRY]),
     footnotes: dec(files[DOCX_FOOTNOTES_ENTRY]),
     headers: names.filter((n) => DOCX_HEADER_RE.test(n)).sort().map((n) => dec(files[n])),
-    footers: names.filter((n) => DOCX_FOOTER_RE.test(n)).sort().map((n) => dec(files[n]))
+    footers: names.filter((n) => DOCX_FOOTER_RE.test(n)).sort().map((n) => dec(files[n])),
+    rels: dec(files[DOCX_RELS_ENTRY]),
+    comments: dec(files[DOCX_COMMENTS_ENTRY])
   }
 }
 
@@ -925,11 +996,40 @@ const XLSX_WORKBOOK_RELS = 'xl/_rels/workbook.xml.rels'
 const XLSX_SHARED_STRINGS_ENTRY = 'xl/sharedStrings.xml'
 const XLSX_STYLES_ENTRY = 'xl/styles.xml'
 const XLSX_SHEET_RE = /^xl\/worksheets\/sheet\d+\.xml$/
+const XLSX_SHEET_RELS_RE = /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/
+const XLSX_COMMENTS_RE = /^xl\/comments\d+\.xml$/
 
 /** 解码 zip 条目为 UTF-8 文本 */
 function decodeEntry(entry: Uint8Array | undefined): string {
   if (!entry) return ''
   return new TextDecoder('utf-8').decode(entry)
+}
+
+/** rels 里的一个关系 */
+interface RelEntry {
+  id: string
+  target: string
+  /** 关系类型（如 .../hyperlink、.../comments） */
+  type: string
+}
+
+/**
+ * rels 关系表 → 关系清单（Id / Target / Type）。
+ * （ppt/presentation.xml 里只有 r:id，真实路径在 rels 里）
+ */
+function parseRelEntries(xml: string): RelEntry[] {
+  const out: RelEntry[] = []
+  for (const m of xml.matchAll(/<Relationship\s[^>]*\/>/g)) {
+    const id = /\bId="([^"]*)"/.exec(m[0])?.[1]
+    const target = /\bTarget="([^"]*)"/.exec(m[0])?.[1]
+    if (!id || !target) continue
+    out.push({
+      id,
+      target: decodeXmlEntities(target),
+      type: /\bType="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    })
+  }
+  return out
 }
 
 /**
@@ -938,12 +1038,13 @@ function decodeEntry(entry: Uint8Array | undefined): string {
  */
 function parseRels(xml: string): Map<string, string> {
   const map = new Map<string, string>()
-  for (const m of xml.matchAll(/<Relationship\s[^>]*\/>/g)) {
-    const id = /\bId="([^"]*)"/.exec(m[0])?.[1]
-    const target = /\bTarget="([^"]*)"/.exec(m[0])?.[1]
-    if (id && target) map.set(id, target)
-  }
+  for (const e of parseRelEntries(xml)) map.set(e.id, e.target)
   return map
+}
+
+/** 目标带协议（http: / mailto: 等）就是外部资源，原样保留，不当 zip 内路径解析 */
+function isExternalTarget(target: string): boolean {
+  return /^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(target)
 }
 
 /** 把 rels 里的相对 Target 拼成 zip 内绝对路径（处理 ../ 与前导 /） */
@@ -2703,7 +2804,104 @@ function excelSerialToParts(serial: number, date1904: boolean): SerialParts | nu
  * 一个工作表的行 → 单元格文本（按列号定位，缺的列补空；有颜色时文本后附 `[颜色:…]`）。
  * 三趟：①解析全部单元格 → ②按整段范围算区间级条件格式的命中集合 → ③逐格套颜色后拼行。
  */
-function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1904: boolean): string[] {
+/* ---------------------- XLSX 超链接 / 批注 ---------------------- */
+
+/** 一个 ref 展开成单元格时能覆盖的格数上限（区间过大直接放弃，防爆） */
+const MAX_LINK_CELLS = 4096
+
+/** ref（`A1` / `A1:B2` / `A1 B2`）覆盖的单元格键（`行:列`） */
+function xlsxRefCellKeys(ref: string): string[] {
+  const out: string[] = []
+  for (const range of parseSqref(ref)) {
+    const count = (range.r2 - range.r1 + 1) * (range.c2 - range.c1 + 1)
+    if (count > MAX_LINK_CELLS) continue
+    for (let r = range.r1; r <= range.r2; r++) {
+      for (let c = range.c1; c <= range.c2; c++) out.push(cfCellKey(r, c))
+    }
+  }
+  return out
+}
+
+/**
+ * 工作表里的 `<hyperlinks>` → 单元格键 → 目标。
+ * 外部链接（http: / mailto: …）原样保留；内部链接用 `location`（如 `Sheet2!A1`）。
+ */
+function parseXlsxHyperlinks(sheetXml: string, rels: Map<string, string>): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const m of sheetXml.matchAll(/<hyperlink\b([^>]*?)\/?>/g)) {
+    const attrs = m[1] ?? ''
+    const ref = /\bref="([^"]*)"/.exec(attrs)?.[1]
+    if (!ref) continue
+    const rid = /\br:id="([^"]*)"/.exec(attrs)?.[1]
+    const location = /\blocation="([^"]*)"/.exec(attrs)?.[1]
+    let target = rid ? rels.get(rid) : undefined
+    if (target && !isExternalTarget(target)) target = resolveRelTarget('xl/worksheets', target)
+    if (!target && location) target = decodeXmlEntities(location)
+    if (!target) continue
+    for (const key of xlsxRefCellKeys(ref)) map.set(key, target)
+  }
+  return map
+}
+
+/** comments.xml → 单元格 ref → 批注列表（作者 + 正文；正文多段用空格连） */
+function parseXlsxComments(xml: string): Map<string, Array<{ author: string; text: string }>> {
+  const map = new Map<string, Array<{ author: string; text: string }>>()
+  if (!xml) return map
+  const authors: string[] = []
+  for (const m of xml.matchAll(/<author>([\s\S]*?)<\/author>/g)) {
+    authors.push(decodeXmlEntities(m[1] ?? ''))
+  }
+  for (const m of xml.matchAll(/<comment\b([^>]*)>([\s\S]*?)<\/comment>/g)) {
+    const attrs = m[1] ?? ''
+    const ref = /\bref="([^"]*)"/.exec(attrs)?.[1]
+    if (!ref) continue
+    const authorId = Number(/\bauthorId="(\d+)"/.exec(attrs)?.[1] ?? '0')
+    const author = authors[authorId] ?? ''
+    const textXml = /<text\b[^>]*>([\s\S]*?)<\/text>/.exec(m[2] ?? '')?.[1] ?? ''
+    const texts = (body: string): string =>
+      [...body.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+        .map((t) => decodeXmlEntities(t[1] ?? ''))
+        .join('')
+    const paras: string[] = []
+    for (const p of textXml.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)) {
+      const t = texts(p[1] ?? '')
+      if (t) paras.push(t)
+    }
+    const text = paras.length > 0 ? paras.join(' ') : texts(textXml)
+    if (!text) continue
+    const list = map.get(ref) ?? []
+    list.push({ author, text })
+    map.set(ref, list)
+  }
+  return map
+}
+
+/** 单元格键 → 链接 / 批注标记文本（`[链接: …] [批注(作者): …]`） */
+function xlsxCellExtras(
+  links: Map<string, string>,
+  comments: Map<string, Array<{ author: string; text: string }>>
+): Map<string, string> {
+  const map = new Map<string, string>()
+  const add = (key: string, marker: string): void => {
+    const prev = map.get(key)
+    map.set(key, prev ? `${prev} ${marker}` : marker)
+  }
+  for (const [key, target] of links) add(key, `[链接: ${target}]`)
+  for (const [ref, list] of comments) {
+    const marker = list.map((c) => `[批注(${c.author}): ${c.text}]`).join(' ')
+    if (!marker) continue
+    for (const key of xlsxRefCellKeys(ref)) add(key, marker)
+  }
+  return map
+}
+
+function parseXlsxSheet(
+  xml: string,
+  shared: string[],
+  styles: XlsxStyles,
+  date1904: boolean,
+  extras: Map<string, string>
+): string[] {
   interface Cell {
     row: number
     col: number
@@ -2807,7 +3005,9 @@ function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1
 
   const out: string[] = []
   for (const r of rows.sort((a, b) => a.row - b.row)) {
-    const filled = r.cells.filter((c) => c.value !== '').sort((a, b) => a.col - b.col)
+    const filled = r.cells
+      .filter((c) => c.value !== '' || extras.has(cfCellKey(c.row, c.col)))
+      .sort((a, b) => a.col - b.col)
     if (filled.length === 0) continue
     const parts: string[] = []
     let expect = filled[0].col
@@ -2816,7 +3016,9 @@ function parseXlsxSheet(xml: string, shared: string[], styles: XlsxStyles, date1
         parts.push('')
         expect++
       }
-      parts.push(c.value + colorMarker(c.font, c.fill))
+      const extra = extras.get(cfCellKey(c.row, c.col)) ?? ''
+      const text = c.value === '' ? extra : extra ? `${c.value} ${extra}` : c.value
+      parts.push(text + colorMarker(c.font, c.fill))
       expect = c.col + 1
     }
     while (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
@@ -2839,7 +3041,9 @@ export function extractXlsxText(filePath: string): string {
       n === XLSX_WORKBOOK_RELS ||
       n === XLSX_SHARED_STRINGS_ENTRY ||
       n === XLSX_STYLES_ENTRY ||
-      XLSX_SHEET_RE.test(n)
+      XLSX_SHEET_RE.test(n) ||
+      XLSX_SHEET_RELS_RE.test(n) ||
+      XLSX_COMMENTS_RE.test(n)
   )
   const workbook = decodeEntry(entries[XLSX_WORKBOOK_ENTRY])
   if (!workbook) throw new Error(`缺少 ${XLSX_WORKBOOK_ENTRY}，不是有效的 XLSX 文件`)
@@ -2870,7 +3074,23 @@ export function extractXlsxText(filePath: string): string {
 
   const blocks: string[] = []
   for (const sheet of sheets) {
-    const rows = parseXlsxSheet(decodeEntry(entries[sheet.path]), shared, styles, date1904)
+    const sheetXml = decodeEntry(entries[sheet.path]) ?? ''
+    // 工作表自己的 rels：超链接目标 + 批注部件都在这里
+    const sheetRelsPath = sheet.path.replace(/([^/]+)$/, '_rels/$1.rels')
+    const relEntries = parseRelEntries(decodeEntry(entries[sheetRelsPath]) ?? '')
+    const rels = new Map(relEntries.map((e) => [e.id, e.target]))
+    const links = parseXlsxHyperlinks(sheetXml, rels)
+    const commentsRel = relEntries.find((e) => e.type.endsWith('/comments'))
+    let commentsPath = commentsRel ? resolveRelTarget('xl/worksheets', commentsRel.target) : ''
+    // 兜底：rels 里没指向批注部件就按命名约定找 xl/commentsN.xml（N 取工作表序号）
+    if (!commentsPath) {
+      const no = /sheet(\d+)\.xml$/.exec(sheet.path)?.[1]
+      const guess = no ? `xl/comments${no}.xml` : ''
+      if (guess && entries[guess]) commentsPath = guess
+    }
+    const comments = parseXlsxComments(commentsPath ? decodeEntry(entries[commentsPath]) ?? '' : '')
+    const extras = xlsxCellExtras(links, comments)
+    const rows = parseXlsxSheet(sheetXml, shared, styles, date1904, extras)
     if (rows.length === 0) continue
     blocks.push(`[工作表 ${sheet.name}]\n${rows.join('\n')}`)
   }

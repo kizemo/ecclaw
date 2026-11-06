@@ -1524,6 +1524,36 @@ phase4d 自测 / e2e 的两条期望值已同步更新，README §5.33 一并注
 
 ---
 
+### 5.41 DOCX / XLSX 链接与批注（超链接目标 + 审阅意见）
+
+第三十七阶段。§5.27 起超链接的**目标 URL**与批注的**审阅意见**整条丢失 ——
+DOCX 的 `w:hyperlink` / XLSX 的 `<hyperlink>` 只留显示文本，链接指向哪里不可知；
+`word/comments.xml` / `xl/commentsN.xml` 完全不读，审阅人的意见在 agent 眼里根本不存在。
+这两类是**不可再生信息**：条件格式、图表丢了还能从像素重算，URL 和审阅意见丢了就真没了。
+本轮把两者补回抽取文本。
+
+- **XLSX 超链接**：`<hyperlink ref="A1" r:id="rIdX"/>` → 到 `xl/worksheets/_rels/sheetN.xml.rels`
+  取 Target；外部 URL 原样，内部 `location="Sheet2!A1"` 原样。
+  **ref 是区间时区内每格都挂**（`A2:A3` → 两格都带同一个链接），展开上限 4096 格防爆炸。
+- **XLSX 批注**：`xl/commentsN.xml` 的 `<comment ref authorId>` 按 ref 精确匹配单元格，
+  作者取 `<authors>` 里 `authorId` 对应的名字；**同一格多条批注按出现顺序全列**。
+  部件路径优先取 sheet rels 里 Type 以 `/comments` 结尾的关系，
+  **兜底按命名约定找 `xl/comments{N}.xml`**（工具产出的文件常不写 sheet rels）。
+- **DOCX 超链接**：`<w:hyperlink r:id>` → `word/_rels/document.xml.rels` 取 Target；
+  `<w:hyperlink w:anchor="书签">` 内部锚点 → `#书签`。
+- **DOCX 批注**：`word/comments.xml` 的 `<w:comment w:id w:author>` +
+  正文里 `<w:commentRangeStart w:id>` 所在段落 → 段落末尾挂批注。
+- **落位与顺序**：宿主文本 → 链接 → 批注 → **颜色标记仍在最末**（既有输出前缀逐字不变）。
+  XLSX 挂在单元格值后；DOCX 挂在段落文本后（`#` 标题前缀之后），表格单元格内走 `markdownCell()` 转义。
+- **标记格式**：链接 `[链接: <目标>]`、批注 `[批注(<作者>): <正文>]`。
+
+**范围**：只改 `electron/main/document-preview.ts`；契约 / `host-bridge.ts` / `host-server.mjs` /
+`src/App.tsx` 不动。
+
+**工具数不变**：仍是 **27**；**无新增依赖**；无链接无批注的文件**输出逐字不变**。
+
+---
+
 ## 6. 技能与文件库
 
 - **技能**：`<stateDir>/skills`（托管）与 `<stateDir>/user-skills`（用户自建），
@@ -1646,7 +1676,14 @@ run 级粗斜体转 `**` / `*` 标记（单元格内同样应用）、
 演讲者备注按 slide 的 rels 找 `notesSlide` 取 body 占位符、落在页内末尾 `[备注] …`；
 图片 alt 取 `p:nvPicPr` 的 `cNvPr@descr` → `[图片: …]`（无 descr 不出噪音行）；
 `p:ph@type` 为 `sldNum` / `dt` / `hdrFtr` / `ftr` 的占位形状整页跳过，页码域文字不混进正文；
-工具数仍 27，见 §5.40）。
+工具数仍 27，见 §5.40）、
+**DOCX / XLSX 链接与批注**（XLSX `<hyperlink ref>` → sheet rels 的 Target、区间 ref 每格都挂、
+内部 `location=` 原样；XLSX `xl/commentsN.xml` 按 ref 匹配单元格、同格多条全列、
+部件路径优先 rels 里的 `/comments` 关系再兜底命名约定；
+DOCX `w:hyperlink` → `document.xml.rels`、`w:anchor` → `#锚点`；
+DOCX `word/comments.xml` + `w:commentRangeStart` 落到所在段落；
+标记为 `[链接: <目标>]` / `[批注(<作者>): <正文>]`，宿主文本 → 链接 → 批注 → 颜色标记仍在最末；
+工具数仍 27，见 §5.41）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，
