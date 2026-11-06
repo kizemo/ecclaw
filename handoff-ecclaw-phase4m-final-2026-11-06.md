@@ -2,7 +2,7 @@
 
 > **一句话状态**：主题「**XLSX 公式 + DOCX 修订痕迹**」→ 代码 ✅ → typecheck ✅ →
 > 秒级自测 **72/72** ✅ → 交叉复验 4l/4j/4k 全绿 ✅ → e2e **50/50** ✅ →
-> **全量回归 run71 二十五套 842/842 全绿** ✅ → 收尾文档 ✅ → **已提交**（feat `__FEAT_COMMIT__`）。
+> **全量回归 run71 二十五套 842/842 全绿** ✅ → 收尾文档 ✅ → **已提交**（feat `ecb43a4`）。
 >
 > MCP 工具数仍 **27**；无新增依赖；**只改 `electron/main/document-preview.ts` 一个产品文件**。
 
@@ -199,7 +199,7 @@
 
 | 提交 | 内容 |
 |---|---|
-| `__FEAT_COMMIT__` | `feat(document-preview): add XLSX formulas and DOCX revision marks` —— 本阶段 feat |
+| `ecb43a4` | `feat(document-preview): add XLSX formulas and DOCX revision marks` —— 本阶段 feat |
 | `__DOC_COMMIT__` | `docs: record phase 4m commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
