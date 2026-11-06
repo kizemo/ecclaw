@@ -217,11 +217,29 @@ interface PdfPage {
   getTextContent(): Promise<{ items: unknown[] }>
   getViewport(opts: { scale: number }): PdfViewport
   render(opts: unknown): { promise: Promise<void> }
+  /** 页内注释（链接 / 便笺 / 表单域）；pdfjs 有，别的实现可能没有 → 可选 + 运行时兜底 */
+  getAnnotations?(): Promise<PdfAnnotation[]>
 }
 interface PdfOutlineItem {
   title?: string
   dest?: unknown
   items?: PdfOutlineItem[]
+}
+/** PDF 注释（pdfjs getAnnotations 的返回项，只取用得到的字段） */
+interface PdfAnnotation {
+  subtype?: string
+  /** 外部链接目标 */
+  url?: string
+  /** 注释正文 */
+  contentsObj?: { str?: string }
+  /** 注释作者 */
+  titleObj?: { str?: string }
+  /** 表单域字段名 */
+  fieldName?: string
+  /** 表单域已填值 */
+  fieldValue?: string
+  /** 内部跳转目标 */
+  dest?: unknown
 }
 interface PdfDocument {
   numPages: number
@@ -232,6 +250,8 @@ interface PdfDocument {
   getDestination?(id: string): Promise<unknown>
   /** 页面引用 → 0 起的页序号 */
   getPageIndex?(ref: unknown): Promise<number>
+  /** 文档元数据（Info 字典）；pdfjs 有 → 可选 + 运行时兜底 */
+  getMetadata?(): Promise<{ info?: Record<string, unknown> }>
 }
 interface PdfjsModule {
   getDocument(opts: unknown): { promise: Promise<PdfDocument> }
@@ -3527,6 +3547,102 @@ async function readPdfOutline(doc: PdfDocument): Promise<DocumentOutlineNode[]> 
  * 预览一个文档（PDF / DOCX / PPTX / XLSX；其余类型明确告知，不猜）。
  * 出错也不抛：把原因写进 error 字段，界面与 agent 都能读到人话。
  */
+/** PDF 日期串（`D:20260101120000Z` / `D:20260101120000+08'00'`）→ 可读文本；认不出来就原样返回 */
+function pdfDateText(raw: string): string {
+  const s = raw.trim()
+  const m = /^D?:?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(s)
+  if (!m) return s
+  const zone = /([+-])(\d{2})'(\d{2})'/.exec(s)
+  const suffix = zone ? ` ${zone[1]}${zone[2]}:${zone[3]}` : ''
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}${suffix}`
+}
+
+/** PDF 的 Info 字典 → 一行文档信息（空字段逐个省略；全空不出行） */
+function pdfInfoLine(info: Record<string, unknown>): string {
+  const pick = (key: string): string => {
+    const v = info?.[key]
+    return typeof v === 'string' ? v.trim() : ''
+  }
+  const parts: string[] = []
+  const put = (label: string, value: string): void => {
+    if (value) parts.push(`${label}: ${value}`)
+  }
+  put('标题', pick('Title'))
+  put('作者', pick('Author'))
+  put('主题', pick('Subject'))
+  put('关键词', pick('Keywords'))
+  put('创建工具', pick('Creator'))
+  put('生成器', pick('Producer'))
+  put('创建时间', pdfDateText(pick('CreationDate')))
+  put('修改时间', pdfDateText(pick('ModDate')))
+  return parts.length > 0 ? `[文档信息] ${parts.join(' · ')}` : ''
+}
+
+/** 文档元数据（Info 字典）→ 一行；没有 getMetadata 的实现 / 读失败都返回空串 */
+async function pdfMetadataLine(doc: PdfDocument): Promise<string> {
+  if (typeof doc.getMetadata !== 'function') return ''
+  try {
+    const meta = await doc.getMetadata()
+    const info = meta?.info
+    if (!info || typeof info !== 'object') return ''
+    return pdfInfoLine(info as Record<string, unknown>)
+  } catch {
+    return ''
+  }
+}
+
+/** 内部跳转目标 → 目标页号（1 起）；解析不出来返回 null（不猜） */
+async function pdfDestPage(doc: PdfDocument, dest: unknown): Promise<number | null> {
+  const ref = Array.isArray(dest) ? dest[0] : dest
+  if (!ref || typeof ref !== 'object') return null
+  const num = (ref as { num?: unknown }).num
+  if (typeof num !== 'number') return null
+  if (typeof doc.getPageIndex !== 'function') return null
+  try {
+    const idx = await doc.getPageIndex(ref)
+    return typeof idx === 'number' && idx >= 0 ? idx + 1 : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 一页的注释 / 链接 / 表单域 → 标记文本。
+ *
+ * - `Link` + `url` → `[链接: …]`；`Link` + `dest` → `[跳转: 第 N 页]`（页号解析不出就写「内部链接」）
+ * - `Text` / `FreeText` 便笺 → `[注释(作者): 正文]`
+ * - `Widget` 表单域 → `[表单: 字段名 = 已填值]`
+ *
+ * 注释读不出来不影响正文（调用方 try/catch）。
+ */
+async function pdfAnnotationMarks(doc: PdfDocument, annots: PdfAnnotation[]): Promise<string> {
+  const out: string[] = []
+  for (const a of annots) {
+    const subtype = a.subtype ?? ''
+    if (subtype === 'Link') {
+      if (a.url) out.push(`[链接: ${a.url}]`)
+      else if (a.dest) {
+        const page = await pdfDestPage(doc, a.dest)
+        out.push(page ? `[跳转: 第 ${page} 页]` : '[跳转: 内部链接]')
+      }
+      continue
+    }
+    if (subtype === 'Text' || subtype === 'FreeText') {
+      const contents = (a.contentsObj?.str ?? '').trim()
+      const author = (a.titleObj?.str ?? '').trim()
+      if (contents) out.push(author ? `[注释(${author}): ${contents}]` : `[注释: ${contents}]`)
+      continue
+    }
+    if (subtype === 'Widget') {
+      const name = (a.fieldName ?? '').trim()
+      const value = typeof a.fieldValue === 'string' ? a.fieldValue.trim() : ''
+      if (name || value) out.push(`[表单: ${name}${value ? ` = ${value}` : ''}]`)
+      continue
+    }
+  }
+  return out.length > 0 ? ` ${out.join(' ')}` : ''
+}
+
 export async function previewDocument(input: DocumentPreviewInput): Promise<DocumentPreview> {
   const resolved = resolveInputPath(input)
   const stat = fs.statSync(resolved)
@@ -3588,6 +3704,8 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     const data = new Uint8Array(fs.readFileSync(resolved))
     const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise
     const total = doc.numPages
+    // 文档元数据（Info 字典）→ 置顶一行（没有 getMetadata 的实现就跳过）
+    const infoLine = await pdfMetadataLine(doc)
     // 第三十一阶段：可指定页码范围（startPage / endPage），越界一律夹住
     // 不给 startPage → 从第 1 页起；不给 endPage → 到最后一页止（各自有自己的默认值）
     const start = clampInt(input.startPage, 1, 1, total)
@@ -3595,12 +3713,21 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     const take = Math.min(end - start + 1, maxPages)
     const lastPage = start + take - 1
     const pages: DocumentPreviewPage[] = []
-    let chars = 0
+    let chars = infoLine.length
     let truncated = false
     for (let i = start; i <= lastPage; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
-      const text = itemsToText(content.items)
+      let text = itemsToText(content.items)
+      // 注释 / 链接 / 表单域（pdfjs 的 getAnnotations；没有这个方法的实现就跳过）
+      if (typeof page.getAnnotations === 'function') {
+        try {
+          const marks = await pdfAnnotationMarks(doc, (await page.getAnnotations()) ?? [])
+          if (marks) text = text ? `${text}${marks}` : marks.trim()
+        } catch {
+          /* 注释读不出来不影响正文 */
+        }
+      }
       pages.push({ page: i, text })
       chars += text.length
       if (chars >= maxChars) {
@@ -3611,11 +3738,12 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     const lastExtracted = pages.length ? pages[pages.length - 1].page : start
     if (lastExtracted < total) truncated = true
     const outline = await readPdfOutline(doc)
+    const body = pages.map((p) => p.text).join('\n\n')
     return {
       ...base,
       pageCount: total,
       pages,
-      text: pages.map((p) => p.text).join('\n\n'),
+      text: infoLine ? `${infoLine}\n${body}` : body,
       truncated,
       error: null,
       pageStart: start,
