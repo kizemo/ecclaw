@@ -727,9 +727,43 @@ function parseDocxComments(xml: string): Map<string, { author: string; text: str
   return map
 }
 
-/** 段落末尾附加的链接 / 批注标记（没有就返回空串） */
+/** 删除类修订的文本：`<w:delText>`（没有就回退 `<w:t>`） */
+function docxDeletedText(body: string): string {
+  const out: string[] = []
+  for (const m of body.matchAll(/<w:delText(?:\s[^>]*)?>([\s\S]*?)<\/w:delText>/g)) {
+    out.push(decodeXmlEntities(m[1]))
+  }
+  if (out.length === 0) return docxParagraphText(body)
+  return out.join('')
+}
+
+/**
+ * 段落里的修订痕迹标记（按文档顺序）。
+ *
+ * - `<w:ins>` = 插入（+），`<w:del>` = 删除（-）；
+ * - `<w:moveTo>` = 移动到（按插入算），`<w:moveFrom>` = 移动自（按删除算）；
+ * - 自闭合的 `<w:ins/>`（段落标记修订：`<w:pPr><w:rPr><w:ins/></w:rPr></w:pPr>`）没有块体 → 天然排除；
+ * - 块体里没有文本（空壳修订）也不产生标记。
+ */
+function docxRevisionMarks(paragraph: string): string[] {
+  const out: string[] = []
+  const re = /<w:(ins|del|moveFrom|moveTo)\b([^>]*?)(\/>|>([\s\S]*?)<\/w:\1>)/g
+  for (const m of paragraph.matchAll(re)) {
+    const tag = m[1] ?? ''
+    const body = m[4] ?? ''
+    if (!body) continue
+    const author = /\bw:author="([^"]*)"/.exec(m[2] ?? '')?.[1] ?? ''
+    const inserted = tag === 'ins' || tag === 'moveTo'
+    const text = inserted ? docxParagraphText(body) : docxDeletedText(body)
+    if (!text) continue
+    out.push(`[修订${inserted ? '+' : '-'}${author}: ${text}]`)
+  }
+  return out
+}
+
+/** 段落末尾附加的修订 / 链接 / 批注标记（没有就返回空串） */
 function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
-  const parts: string[] = []
+  const parts: string[] = docxRevisionMarks(paragraph)
   for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
     parts.push(`[链接: ${target}]`)
   }
@@ -2911,6 +2945,12 @@ function parseXlsxSheet(
     styleIdx: number
     font: string | null
     fill: string | null
+    /** 单元格公式体（共享公式的 follower 已回填 master 的公式体） */
+    formula: string
+    /** 公式的 si（共享公式分组号） */
+    formulaSi: string
+    /** 本格是共享公式的 follower（公式体继承自 master） */
+    sharedFollower: boolean
   }
   const rows: Array<{ row: number; cells: Cell[] }> = []
   /** 全部单元格（含空值）—— 区间级规则按范围取数时用 */
@@ -2974,6 +3014,9 @@ function parseXlsxSheet(
         }
       }
 
+      // 公式：`<f>` 的体（普通 / 数组公式直接取；共享公式 follower 只有 si，靠 master 回填）
+      const fEl = /<f\b([^>]*?)(\/>|>([\s\S]*?)<\/f>)/.exec(cellInner)
+      const fBody = fEl?.[3] ?? ''
       const cell: Cell = {
         row: rowNo,
         col,
@@ -2982,12 +3025,30 @@ function parseXlsxSheet(
         sectionColor,
         styleIdx,
         font: null,
-        fill: null
+        fill: null,
+        formula: fBody.trim() === '' ? '' : decodeXmlEntities(fBody).trim(),
+        formulaSi: /\bsi="(\d+)"/.exec(fEl?.[1] ?? '')?.[1] ?? '',
+        sharedFollower: false
       }
       cells.push(cell)
       allCells.push(cell)
     }
     rows.push({ row: rowNo, cells })
+  }
+
+  // 共享公式：follower 只有 si 没有公式体 → 按 si 找回 master 的公式体（不做相对引用重写）
+  const sharedMasters = new Map<string, string>()
+  for (const cell of allCells) {
+    if (cell.formula !== '' && cell.formulaSi !== '') sharedMasters.set(cell.formulaSi, cell.formula)
+  }
+  for (const cell of allCells) {
+    if (cell.formula === '' && cell.formulaSi !== '') {
+      const master = sharedMasters.get(cell.formulaSi)
+      if (master) {
+        cell.formula = master
+        cell.sharedFollower = true
+      }
+    }
   }
 
   // 区间级规则（top10 / aboveAverage / 重复值 / 唯一值）要先拿整段范围的数据才能判定
@@ -3006,7 +3067,7 @@ function parseXlsxSheet(
   const out: string[] = []
   for (const r of rows.sort((a, b) => a.row - b.row)) {
     const filled = r.cells
-      .filter((c) => c.value !== '' || extras.has(cfCellKey(c.row, c.col)))
+      .filter((c) => c.value !== '' || c.formula !== '' || extras.has(cfCellKey(c.row, c.col)))
       .sort((a, b) => a.col - b.col)
     if (filled.length === 0) continue
     const parts: string[] = []
@@ -3017,7 +3078,13 @@ function parseXlsxSheet(
         expect++
       }
       const extra = extras.get(cfCellKey(c.row, c.col)) ?? ''
-      const text = c.value === '' ? extra : extra ? `${c.value} ${extra}` : c.value
+      // 顺序：值 → 公式 → 链接 / 批注 → 颜色标记（颜色恒在最末）
+      const markers: string[] = []
+      if (c.formula !== '') {
+        markers.push(`[公式: ${c.sharedFollower ? `共享 ${c.formula}` : c.formula}]`)
+      }
+      if (extra) markers.push(extra)
+      const text = [c.value, ...markers].filter((s) => s !== '').join(' ')
       parts.push(text + colorMarker(c.font, c.fill))
       expect = c.col + 1
     }
