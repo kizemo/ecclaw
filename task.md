@@ -272,6 +272,19 @@
 > 根因为**事件库已超 2000 条而回放硬上限 2000**（`host-events.ts:409`）导致参照样本被截断，
 > 与本轮改动无关（本轮只动 `document-preview.ts`）；其余二十六套全绿（未跑真站 phase3s/3q）。
 > 功能提交 **`d00268b`**；交接见 `handoff-ecclaw-phase4o-final-2026-11-06.md`。
+> **第四十一阶段（PDF 链接 / 注释 / 表单域 / 元数据）已完成并真机验证（`phase4p-e2e.cjs` **22/22** 全绿）**：
+> PDF 此前只抽正文 —— 页面里的超链接、便笺批注、可填写表单域，以及 Info 字典里的标题作者全部拿不到。
+> 本轮用 pdfjs 的 `page.getAnnotations()` 逐页补齐：外部链接 `[链接: URL]`、内部跳转 `[跳转: 第 N 页]`
+> （页号解析不出写 `[跳转: 内部链接]`，不猜）、便笺 `[注释(作者): 正文]`、表单域 `[表单: 字段名 = 已填值]`，
+> **标记挂在每页正文之后**；元数据走 `getMetadata()` 的 Info 字典 → **置顶一行**
+> `[文档信息] 标题 · 作者 · 主题 · 关键词 · 创建工具 · 生成器 · 创建时间 · 修改时间`，
+> **空字段逐个省略、全空不出行**；`getAnnotations` / `getMetadata` 都是**可选方法**（别的实现没有就跳过，不崩）；
+> **没有注释、没有元数据的 PDF 输出与改动前逐字一致**（回归红线）；
+> PDF 日期串 `D:20260101120000Z` → `2026-01-01 12:00:00`，认不出原样返回。
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **18/18**；e2e **22/22**；全量回归 run74 二十八套 **958 PASS / 1 FAIL** ——
+> 唯一失败 phase3r C3 为**事件库超 2000 条**的既有环境问题（非产品回归）；其余二十七套全绿（未跑真站 phase3s/3q）。
+> 功能提交 **`7001922`**；交接见 `handoff-ecclaw-phase4p-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -567,6 +580,30 @@
    → 显式 `continue` 跳过。
 8. **一页可能有多个批注部件**：`relTargetByType()` 只返回第一个（留给备注页用），
    批注必须用新加的 `relTargetsByType()` 取全部。
+
+## 第四十一阶段（2026-11-06）：PDF 链接 / 注释 / 表单域 / 元数据 ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 探针 `phase4p-probe.cjs` 复验上轮候选并扫新轴（19 fixture / 51 探针串 / 3 个控制组全绿）；PDF 四类信息（链接 / 注释 / 表单域 / 元数据）均实测为真缺口；候选清单本轮**未出现新的过期项** |
+| 2 | 解析 | ✅ | 新增 `PdfAnnotation` / `PdfPage.getAnnotations?()` / `PdfDocument.getMetadata?()`（跟 `getOutline` 同套路：可选方法 + 运行时兜底）；新函数 `pdfDateText()` / `pdfInfoLine()` / `pdfMetadataLine()` / `pdfDestPage()` / `pdfAnnotationMarks()` |
+| 3 | 落位与输出 | ✅ | 元数据置顶一行 `[文档信息] 标题 · 作者 · 主题 · 关键词 · 创建工具 · 生成器 · 创建时间 · 修改时间`；链接 / 跳转 / 注释 / 表单域标记挂在**每页正文之后**；日期 `D:20260101120000Z` → `2026-01-01 12:00:00`，认不出原样返回；页号解析不出写 `[跳转: 内部链接]` 不猜 |
+| 4 | 容错 | ✅ | `getAnnotations` / `getMetadata` 不存在或读失败 → 跳过、不影响正文；**没有注释、没有元数据的 PDF 输出与改动前逐字一致**（自测第 2 组守这条） |
+| 5 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**（+131 / −3）；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` 不动 → **MCP 工具数仍 27**；**无新增依赖**；无 UI 改动 |
+| 6 | 自测 + e2e + 回归 | ✅ | `phase4p-selftest.cjs` **18/18**；`phase4p-e2e.cjs` **22/22**（工具面 · 抽取 · 界面）→ `run74-phase4p.log`；全量回归 run74 二十八套 **958 PASS / 1 FAIL**（摘要 `run74-summary.txt`）：唯一失败 phase3r C3 为**事件库超 2000 条**导致回放硬上限截断（`host-events.ts:409`）的既有环境问题，与本轮无关；其余二十七套全绿。未跑真站 phase3s/3q |
+
+第四十一阶段实证发现：
+
+1. **手搓 PDF fixture 的对象编号容易错位**：catalog=1 / pages=2 / page=3 / font=4 / content=5，
+   **注释从 6 开始**。把注释写成 5 → `/Annots` 指到 content stream → 表单域整段丢失（会被误判成产品 bug）。
+2. **PDF 中文串要按 UTF-16BE + BOM 写成十六进制串**（`<FEFF…>`）：`Buffer.from(s,'latin1')`
+   会把中文截成低字节 → pdfjs 读出来是乱码（`Title: "PDF ⁄c\u0007Ÿ"`），**不是产品问题**。
+3. **表单域必须要有 `/AcroForm`**（catalog 里 `<< /AcroForm << /Fields [...] >> >>`），
+   否则 pdfjs 不把 Widget 当表单域，`fieldName` / `fieldValue` 都是空。
+4. **DOCX 文本框文字其实抽得到**：`docxRuns` 的非贪婪正则意外把文本框里的 `w:t` 一起吞了 ——
+   **别再把它当缺口**（本轮探针第 4 次证伪候选）。
+5. **PDF 注释取的是 `contentsObj.str` / `titleObj.str`**，不是 `contents` / `title`；
+   表单域取 `fieldName` / `fieldValue`；这三点在 pdfjs 的类型里都容易看错。
 
 ## 第四十阶段（2026-11-06）：三格式文档属性（谁写的、什么时候改的） ✅
 
