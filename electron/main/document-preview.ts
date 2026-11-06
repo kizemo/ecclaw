@@ -361,10 +361,14 @@ function docxParagraphText(paragraph: string): string {
 const DOCX_STYLES_ENTRY = 'word/styles.xml'
 const DOCX_NUMBERING_ENTRY = 'word/numbering.xml'
 const DOCX_FOOTNOTES_ENTRY = 'word/footnotes.xml'
+/** 尾注部件（与 footnotes.xml 同构，w:endnote 换 w:footnote） */
+const DOCX_ENDNOTES_ENTRY = 'word/endnotes.xml'
 const DOCX_HEADER_RE = /^word\/header\d*\.xml$/
 const DOCX_FOOTER_RE = /^word\/footer\d*\.xml$/
 const DOCX_RELS_ENTRY = 'word/_rels/document.xml.rels'
 const DOCX_COMMENTS_ENTRY = 'word/comments.xml'
+/** 批注扩展部件：记录批注之间的回复关系（paraId → paraIdParent） */
+const DOCX_COMMENTS_EXTENDED_ENTRY = 'word/commentsExtended.xml'
 
 /** OOXML 三兄弟共用的文档属性部件（DOCX / XLSX / PPTX 位置相同） */
 const DOC_CORE_PROPS_ENTRY = 'docProps/core.xml'
@@ -479,16 +483,19 @@ function docPropsLines(coreXml: string, appXml: string, customXml: string): stri
   return lines
 }
 
-/** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注 + 页眉页脚 + 超链接关系 + 批注 + 文档属性 */
+/** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注尾注 + 页眉页脚 + 超链接关系 + 批注（含回复链）+ 文档属性 */
 interface DocxParts {
   document: string
   styles: string
   numbering: string
   footnotes: string
+  endnotes: string
   headers: string[]
   footers: string[]
   rels: string
   comments: string
+  /** 批注回复的线程结构（可缺失） */
+  commentsExtended: string
   coreProps: string
   appProps: string
   customProps: string
@@ -709,8 +716,21 @@ function docxToggleOn(rPr: string, tag: string): boolean {
   return val !== '0' && val !== 'false' && val !== 'off'
 }
 
-/** 段落里的 run（按文档顺序）：文本 + 粗体/斜体标记 + 脚注引用角标 */
-function docxRuns(paragraph: string, footnoteNumbers: Map<string, number>): DocxRun[] {
+/** 图片（wp:docPr）的替代文字：descr 优先、title 兜底；都空不输出（name 是「图片 N」这类噪音） */
+function docxImageAlt(attrs: string): string {
+  const pick = (name: string): string =>
+    decodeXmlEntities(
+      new RegExp(`(?:[\\w.-]+:)?${name}="([^"]*)"`).exec(attrs)?.[1] ?? ''
+    ).trim()
+  return pick('descr') || pick('title')
+}
+
+/** 段落里的 run（按文档顺序）：文本 + 粗体/斜体标记 + 脚注/尾注引用角标 + 图片替代文字 */
+function docxRuns(
+  paragraph: string,
+  footnoteNumbers: Map<string, number>,
+  endnoteNumbers: Map<string, number>
+): DocxRun[] {
   const runs: DocxRun[] = []
   const re = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g
   for (const m of paragraph.matchAll(re)) {
@@ -720,14 +740,20 @@ function docxRuns(paragraph: string, footnoteNumbers: Map<string, number>): Docx
     const italic = docxToggleOn(rPr, 'w:i')
     let text = ''
     const inner =
-      /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\s*\/>|<w:footnoteReference\b[^>]*\bw:id="(\d+)"[^>]*\/>/g
+      /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\s*\/>|<w:footnoteReference\b[^>]*\bw:id="(\d+)"[^>]*\/>|<w:endnoteReference\b[^>]*\bw:id="(\d+)"[^>]*\/>|<wp:docPr\b([^>]*)>/g
     for (const t of body.matchAll(inner)) {
       if (t[1] !== undefined) text += decodeXmlEntities(t[1])
       else if (t[2] === 'tab') text += '\t'
       else if (t[2] !== undefined) text += '\n'
-      else {
+      else if (t[3] !== undefined) {
         const num = footnoteNumbers.get(t[3])
         if (num) text += `[${num}]`
+      } else if (t[4] !== undefined) {
+        const num = endnoteNumbers.get(t[4])
+        if (num) text += `[${num}]`
+      } else {
+        const alt = docxImageAlt(t[5] ?? '')
+        if (alt) text += `[图片: ${alt}]`
       }
     }
     runs.push({ text, bold, italic })
@@ -758,16 +784,21 @@ function docxRunsText(runs: DocxRun[]): string {
   return parts.join('')
 }
 
-/** DOCX 渲染上下文（样式表 / 编号表 / 计数器 / 脚注序号 / 超链接 / 批注） */
+/** DOCX 渲染上下文（样式表 / 编号表 / 计数器 / 脚注尾注序号 / 超链接 / 批注与回复链） */
 interface DocxRenderCtx {
   styles: Map<string, DocxStyleInfo>
   numbering: DocxNumbering
   counters: Map<string, number[]>
   footnoteNumbers: Map<string, number>
+  endnoteNumbers: Map<string, number>
   /** r:id → 超链接目标（外部 URL 或锚点） */
   hyperlinks: Map<string, string>
-  /** 批注 id → {作者, 正文} */
-  comments: Map<string, { author: string; text: string }>
+  /** 批注 id → {作者, 正文, 首段 paraId} */
+  comments: Map<string, { author: string; text: string; paraId: string }>
+  /** 根批注 id → 后代的回复 id（按 comments.xml 文档顺序，多级已摊平） */
+  commentThread: Map<string, string[]>
+  /** 作为回复存在的批注 id（跟根批注一起输出，不单独再出） */
+  commentReplyIds: Set<string>
 }
 
 /**
@@ -780,7 +811,7 @@ function renderDocxParagraph(
   structure: boolean
 ): string {
   const props = docxParagraphProps(paragraph, ctx.styles)
-  const text = docxRunsText(docxRuns(paragraph, ctx.footnoteNumbers))
+  const text = docxRunsText(docxRuns(paragraph, ctx.footnoteNumbers, ctx.endnoteNumbers))
   const extras = docxExtras(paragraph, ctx)
   if (!text.trim()) return extras.trim()
   if (!structure) return text.trim() + extras
@@ -794,20 +825,22 @@ function renderDocxParagraph(
   return (prefix + text).trim() + extras
 }
 
-/** 脚注引用编号：按正文出现顺序给 1、2、3… */
-function docxFootnoteNumbers(documentXml: string): Map<string, number> {
+/** 脚注/尾注引用编号：按正文出现顺序给 1、2、3… */
+function docxNoteNumbers(documentXml: string, kind: 'footnote' | 'endnote'): Map<string, number> {
   const map = new Map<string, number>()
-  for (const m of documentXml.matchAll(/<w:footnoteReference\b[^>]*\bw:id="(\d+)"/g)) {
+  const re = new RegExp(`<w:${kind}Reference\\b[^>]*\\bw:id="(\\d+)"`, 'g')
+  for (const m of documentXml.matchAll(re)) {
     if (!map.has(m[1])) map.set(m[1], map.size + 1)
   }
   return map
 }
 
-/** footnotes.xml → 脚注 id → 正文（分隔符/续行分隔符这类 id ≤ 0 的不要） */
-function parseDocxFootnotes(xml: string): Map<string, string> {
+/** footnotes.xml / endnotes.xml → 注 id → 正文（分隔符/续行分隔符这类 id ≤ 0 的不要） */
+function parseDocxNotes(xml: string, kind: 'footnote' | 'endnote'): Map<string, string> {
   const map = new Map<string, string>()
   if (!xml) return map
-  for (const m of xml.matchAll(/<w:footnote\b[^>]*>([\s\S]*?)<\/w:footnote>/g)) {
+  const re = new RegExp(`<w:${kind}\\b[^>]*>([\\s\\S]*?)</w:${kind}>`, 'g')
+  for (const m of xml.matchAll(re)) {
     const id = /\bw:id="(-?\d+)"/.exec(m[0])?.[1] ?? ''
     if (!id || Number(id) <= 0) continue
     const paras: string[] = []
@@ -843,9 +876,11 @@ function docxCommentIds(paragraph: string): string[] {
   return out
 }
 
-/** comments.xml → 批注 id → {作者, 正文}（正文只取纯文本，不带粗斜体标记） */
-function parseDocxComments(xml: string): Map<string, { author: string; text: string }> {
-  const map = new Map<string, { author: string; text: string }>()
+/** comments.xml → 批注 id → {作者, 正文, 首段 paraId}（正文只取纯文本，不带粗斜体标记） */
+function parseDocxComments(
+  xml: string
+): Map<string, { author: string; text: string; paraId: string }> {
+  const map = new Map<string, { author: string; text: string; paraId: string }>()
   if (!xml) return map
   for (const m of xml.matchAll(/<w:comment\b([^>]*)>([\s\S]*?)<\/w:comment>/g)) {
     const id = /\bw:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
@@ -858,9 +893,64 @@ function parseDocxComments(xml: string): Map<string, { author: string; text: str
     }
     const text = paras.join(' ')
     if (!text) continue
-    map.set(id, { author, text })
+    // 首段的 paraId（w14:paraId 这类前缀按本地名匹配）；
+    // 不会误配 paraIdParent —— 那串在 paraId 后还有 Parent，接不上 `="`
+    const paraId = /(?:[\w.-]+:)?paraId="([^"]*)"/.exec(m[2] ?? '')?.[1] ?? ''
+    map.set(id, { author, text, paraId })
   }
   return map
+}
+
+/**
+ * commentsExtended.xml → 批注线程结构。
+ * `commentEx` 的 paraId → paraIdParent 表示「这条批注回复了那一条」；
+ * 回复挂在根批注之后按文档顺序摊平输出。部件缺失或解析不出时返回空结构，
+ * 输出与没有回复链之前逐字一致（回归红线）。
+ */
+function buildDocxCommentThreads(
+  comments: Map<string, { author: string; text: string; paraId: string }>,
+  xml: string
+): { thread: Map<string, string[]>; replies: Set<string> } {
+  const thread = new Map<string, string[]>()
+  const replies = new Set<string>()
+  if (!xml || comments.size === 0) return { thread, replies }
+  const attr = (attrs: string, name: string): string =>
+    new RegExp(`(?:[\\w.-]+:)?${name}="([^"]*)"`).exec(attrs)?.[1] ?? ''
+  const byParaId = new Map<string, string>()
+  for (const [id, c] of comments) {
+    if (c.paraId && !byParaId.has(c.paraId)) byParaId.set(c.paraId, id)
+  }
+  const parentOf = new Map<string, string>()
+  for (const m of xml.matchAll(/<(?:[\w.-]+:)?commentEx\b([^>]*)>/g)) {
+    const self = attr(m[1] ?? '', 'paraId')
+    const parent = attr(m[1] ?? '', 'paraIdParent')
+    if (!self || !parent) continue
+    const id = byParaId.get(self)
+    const root = byParaId.get(parent)
+    if (!id || !root || id === root) continue
+    parentOf.set(id, root)
+  }
+  // 沿 parentOf 上溯找根；seen 防环
+  const rootOf = (id: string): string => {
+    let cur = id
+    const seen = new Set<string>()
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur)
+      cur = parentOf.get(cur) as string
+    }
+    return cur
+  }
+  // comments 是 Map，迭代顺序 = comments.xml 文档顺序，挂到根下后回复保持原文顺序
+  for (const [id] of comments) {
+    if (!parentOf.has(id)) continue
+    const root = rootOf(id)
+    if (root === id) continue // 成环自指：当独立批注输出，不挂任何人、也不被任何人藏起
+    replies.add(id)
+    const list = thread.get(root) ?? []
+    list.push(id)
+    thread.set(root, list)
+  }
+  return { thread, replies }
 }
 
 /** 删除类修订的文本：`<w:delText>`（没有就回退 `<w:t>`） */
@@ -897,15 +987,20 @@ function docxRevisionMarks(paragraph: string): string[] {
   return out
 }
 
-/** 段落末尾附加的修订 / 链接 / 批注标记（没有就返回空串） */
+/** 段落末尾附加的修订 / 链接 / 批注（含回复）标记（没有就返回空串） */
 function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
   const parts: string[] = docxRevisionMarks(paragraph)
   for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
     parts.push(`[链接: ${target}]`)
   }
   for (const id of docxCommentIds(paragraph)) {
+    if (ctx.commentReplyIds.has(id)) continue // 回复：跟着根批注一起输出
     const c = ctx.comments.get(id)
     if (c) parts.push(`[批注(${c.author}): ${c.text}]`)
+    for (const rid of ctx.commentThread.get(id) ?? []) {
+      const r = ctx.comments.get(rid)
+      if (r) parts.push(`[回复(${r.author}): ${r.text}]`)
+    }
   }
   return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
@@ -1068,18 +1163,24 @@ function docxTableMarkdown(tableXml: string, ctx: DocxRenderCtx): string {
 /**
  * DOCX → 纯文本。
  * 正文段落 + 表格转 Markdown 表格；标题带 `#`、列表项带真实编号、粗斜体带 `**`/`*`；
- * 页眉置顶、页脚置底、脚注在正文之后（引用处内联 `[N]`）。
+ * 页眉置顶、页脚置底、脚注尾注在正文之后（引用处内联 `[N]`，脚注段在前、尾注段在后）。
  */
 function extractDocxText(parts: DocxParts): string {
+  const comments = parseDocxComments(parts.comments)
+  const threads = buildDocxCommentThreads(comments, parts.commentsExtended)
   const ctx: DocxRenderCtx = {
     styles: parseDocxStyles(parts.styles),
     numbering: parseDocxNumbering(parts.numbering),
     counters: new Map<string, number[]>(),
-    footnoteNumbers: docxFootnoteNumbers(parts.document),
+    footnoteNumbers: docxNoteNumbers(parts.document, 'footnote'),
+    endnoteNumbers: docxNoteNumbers(parts.document, 'endnote'),
     hyperlinks: parseRels(parts.rels),
-    comments: parseDocxComments(parts.comments)
+    comments,
+    commentThread: threads.thread,
+    commentReplyIds: threads.replies
   }
-  const footnotes = parseDocxFootnotes(parts.footnotes)
+  const footnotes = parseDocxNotes(parts.footnotes, 'footnote')
+  const endnotes = parseDocxNotes(parts.endnotes, 'endnote')
   const blocks: string[] = []
 
   // 文档属性：core（标题/作者/修改人/修改时间）+ app（应用/公司/页数/字数）+ custom
@@ -1114,6 +1215,14 @@ function extractDocxText(parts: DocxParts): string {
   }
   if (fnLines.length > 0) blocks.push('[脚注]', ...fnLines)
 
+  // 尾注：与脚注同口径（按正文引用顺序编号），独立成段、排在脚注之后
+  const enLines: string[] = []
+  for (const [id, num] of [...ctx.endnoteNumbers.entries()].sort((a, b) => a[1] - b[1])) {
+    const text = endnotes.get(id)
+    if (text) enLines.push(`${num}. ${text}`)
+  }
+  if (enLines.length > 0) blocks.push('[尾注]', ...enLines)
+
   // 页脚
   const seenFooter = new Set<string>()
   for (const line of parts.footers.flatMap((f) => docxHeaderLines(f))) {
@@ -1132,7 +1241,7 @@ function readZipEntries(filePath: string, match: (name: string) => boolean): Rec
   return unzipSync(data, { filter: (f) => match(f.name) && f.originalSize <= MAX_ENTRY_BYTES })
 }
 
-/** 解出 DOCX 要用的部件（正文 + 样式 + 编号 + 脚注 + 页眉页脚，拒绝 zip 炸弹） */
+/** 解出 DOCX 要用的部件（正文 + 样式 + 编号 + 脚注尾注 + 页眉页脚 + 批注含回复，拒绝 zip 炸弹） */
 function readDocxParts(filePath: string): DocxParts {
   const files = readZipEntries(
     filePath,
@@ -1141,8 +1250,10 @@ function readDocxParts(filePath: string): DocxParts {
       n === DOCX_STYLES_ENTRY ||
       n === DOCX_NUMBERING_ENTRY ||
       n === DOCX_FOOTNOTES_ENTRY ||
+      n === DOCX_ENDNOTES_ENTRY ||
       n === DOCX_RELS_ENTRY ||
       n === DOCX_COMMENTS_ENTRY ||
+      n === DOCX_COMMENTS_EXTENDED_ENTRY ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY ||
       DOCX_HEADER_RE.test(n) ||
       DOCX_FOOTER_RE.test(n)
@@ -1157,10 +1268,12 @@ function readDocxParts(filePath: string): DocxParts {
     styles: dec(files[DOCX_STYLES_ENTRY]),
     numbering: dec(files[DOCX_NUMBERING_ENTRY]),
     footnotes: dec(files[DOCX_FOOTNOTES_ENTRY]),
+    endnotes: dec(files[DOCX_ENDNOTES_ENTRY]),
     headers: names.filter((n) => DOCX_HEADER_RE.test(n)).sort().map((n) => dec(files[n])),
     footers: names.filter((n) => DOCX_FOOTER_RE.test(n)).sort().map((n) => dec(files[n])),
     rels: dec(files[DOCX_RELS_ENTRY]),
     comments: dec(files[DOCX_COMMENTS_ENTRY]),
+    commentsExtended: dec(files[DOCX_COMMENTS_EXTENDED_ENTRY]),
     coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
     appProps: dec(files[DOC_APP_PROPS_ENTRY]),
     customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
