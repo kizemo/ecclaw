@@ -368,6 +368,10 @@ const DOCX_COMMENTS_ENTRY = 'word/comments.xml'
 
 /** OOXML 三兄弟共用的文档属性部件（DOCX / XLSX / PPTX 位置相同） */
 const DOC_CORE_PROPS_ENTRY = 'docProps/core.xml'
+/** app.xml：应用 / 公司 / 页数 / 字数（三格式位置相同） */
+const DOC_APP_PROPS_ENTRY = 'docProps/app.xml'
+/** custom.xml：用户自定义属性（三格式位置相同） */
+const DOC_CUSTOM_PROPS_ENTRY = 'docProps/custom.xml'
 
 /** core.xml 里对阅读有用的元数据（空字段不输出） */
 interface DocCoreProps {
@@ -397,14 +401,82 @@ function parseCoreProps(xml: string): DocCoreProps {
   }
 }
 
-/** 一行文档元数据；全空返回空串（不出噪音行） */
-function corePropsLine(props: DocCoreProps): string {
+/** `docProps/app.xml` 里对阅读有用的字段（空字段不输出） */
+interface DocAppProps {
+  application: string
+  company: string
+  pages: string
+  words: string
+}
+
+/** `docProps/custom.xml` 的一条自定义属性 */
+interface DocCustomProp {
+  name: string
+  value: string
+}
+
+/**
+ * 解析 `docProps/app.xml`。
+ * 与 core.xml 一样按**本地名**匹配（前缀可任意绑定）；只取有阅读价值的字段。
+ */
+function parseAppProps(xml: string): DocAppProps {
+  const pick = (local: string): string => {
+    const re = new RegExp(
+      `<(?:[\\w.-]+:)?${local}\\b[^>]*>([\\s\\S]*?)</(?:[\\w.-]+:)?${local}>`
+    )
+    return decodeXmlEntities(re.exec(xml)?.[1] ?? '').trim()
+  }
+  return {
+    application: pick('Application'),
+    company: pick('Company'),
+    pages: pick('Pages'),
+    words: pick('Words')
+  }
+}
+
+/**
+ * 解析 `docProps/custom.xml`：`<property name="…">` + 任意 `vt:*` 值。
+ * 值为多段（如 `vt:vector`）时按出现顺序拼成 `a, b`；空名或空值跳过。
+ */
+function parseCustomProps(xml: string): DocCustomProp[] {
+  const out: DocCustomProp[] = []
+  for (const m of xml.matchAll(
+    /<(?:[\w.-]+:)?property\b([^>]*)>([\s\S]*?)<\/(?:[\w.-]+:)?property>/g
+  )) {
+    const name = decodeXmlEntities(/\bname="([^"]*)"/.exec(m[1])?.[1] ?? '').trim()
+    const value = decodeXmlEntities(
+      m[2].replace(/<\/(?:[\w.-]+:)?(?:lpstr|lpwstr|bstr)\s*>/g, ', ').replace(/<[^>]+>/g, '')
+    )
+      .trim()
+      .replace(/,\s*$/, '')
+    if (name && value) out.push({ name, value })
+  }
+  return out
+}
+
+/**
+ * docProps 家族 → 置顶行：core + app 合成一行 `[文档信息]`，custom 单独一行 `[自定义属性]`。
+ * 空字段逐个省略；全部为空返回空数组（不出噪音行）。
+ */
+function docPropsLines(coreXml: string, appXml: string, customXml: string): string[] {
+  const props = parseCoreProps(coreXml)
+  const app = parseAppProps(appXml)
   const parts: string[] = []
   if (props.title) parts.push(`标题: ${props.title}`)
   if (props.creator) parts.push(`作者: ${props.creator}`)
   if (props.lastModifiedBy) parts.push(`修改人: ${props.lastModifiedBy}`)
   if (props.modified) parts.push(`修改时间: ${props.modified}`)
-  return parts.length > 0 ? `[文档信息] ${parts.join(' · ')}` : ''
+  if (app.application) parts.push(`应用: ${app.application}`)
+  if (app.company) parts.push(`公司: ${app.company}`)
+  if (app.pages) parts.push(`页数: ${app.pages}`)
+  if (app.words) parts.push(`字数: ${app.words}`)
+  const lines: string[] = []
+  if (parts.length > 0) lines.push(`[文档信息] ${parts.join(' · ')}`)
+  const custom = parseCustomProps(customXml)
+  if (custom.length > 0) {
+    lines.push(`[自定义属性] ${custom.map((p) => `${p.name}: ${p.value}`).join(' · ')}`)
+  }
+  return lines
 }
 
 /** DOCX 要抽的部件：正文 + 样式 + 编号 + 脚注 + 页眉页脚 + 超链接关系 + 批注 + 文档属性 */
@@ -418,6 +490,8 @@ interface DocxParts {
   rels: string
   comments: string
   coreProps: string
+  appProps: string
+  customProps: string
 }
 
 /** 缩进哨兵：归一化会把连续空格压成一个，所以先用哨兵占位，最后再还原成空格 */
@@ -1008,9 +1082,10 @@ function extractDocxText(parts: DocxParts): string {
   const footnotes = parseDocxFootnotes(parts.footnotes)
   const blocks: string[] = []
 
-  // 文档属性：标题 / 作者 / 修改人 / 修改时间（空则不出行）
-  const meta = corePropsLine(parseCoreProps(parts.coreProps))
-  if (meta) blocks.push(meta)
+  // 文档属性：core（标题/作者/修改人/修改时间）+ app（应用/公司/页数/字数）+ custom
+  for (const line of docPropsLines(parts.coreProps, parts.appProps, parts.customProps)) {
+    blocks.push(line)
+  }
 
   // 页眉（多个部件可能内容重复，去重）
   const seen = new Set<string>()
@@ -1068,7 +1143,7 @@ function readDocxParts(filePath: string): DocxParts {
       n === DOCX_FOOTNOTES_ENTRY ||
       n === DOCX_RELS_ENTRY ||
       n === DOCX_COMMENTS_ENTRY ||
-      n === DOC_CORE_PROPS_ENTRY ||
+      n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY ||
       DOCX_HEADER_RE.test(n) ||
       DOCX_FOOTER_RE.test(n)
   )
@@ -1086,7 +1161,9 @@ function readDocxParts(filePath: string): DocxParts {
     footers: names.filter((n) => DOCX_FOOTER_RE.test(n)).sort().map((n) => dec(files[n])),
     rels: dec(files[DOCX_RELS_ENTRY]),
     comments: dec(files[DOCX_COMMENTS_ENTRY]),
-    coreProps: dec(files[DOC_CORE_PROPS_ENTRY])
+    coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
+    appProps: dec(files[DOC_APP_PROPS_ENTRY]),
+    customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
   }
 }
 
@@ -1205,6 +1282,10 @@ interface PptxParts {
   authors: Record<string, string>
   /** docProps/core.xml 原文 */
   coreProps: string
+  /** docProps/app.xml 原文 */
+  appProps: string
+  /** docProps/custom.xml 原文 */
+  customProps: string
 }
 
 /** 形状（p:sp）里的文字：每个段落一行（段落里的超链接挂在该行末尾） */
@@ -1495,7 +1576,7 @@ function readPptxParts(filePath: string): PptxParts {
       PPTX_NOTES_RE.test(n) ||
       PPTX_COMMENTS_RE.test(n) ||
       PPTX_AUTHORS_RE.test(n) ||
-      n === DOC_CORE_PROPS_ENTRY
+      n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
   const dec = (u: Uint8Array | undefined): string =>
     u ? new TextDecoder('utf-8').decode(u) : ''
@@ -1522,7 +1603,9 @@ function readPptxParts(filePath: string): PptxParts {
     notes,
     comments,
     authors,
-    coreProps: dec(files[DOC_CORE_PROPS_ENTRY])
+    coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
+    appProps: dec(files[DOC_APP_PROPS_ENTRY]),
+    customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
   }
 }
 
@@ -1580,7 +1663,7 @@ function pptxRenderCtx(parts: PptxParts, slide: PptxParts['slides'][number]): Pp
  */
 export function extractPptxText(filePath: string): string {
   const parts = readPptxParts(filePath)
-  const meta = corePropsLine(parseCoreProps(parts.coreProps))
+  const meta = docPropsLines(parts.coreProps, parts.appProps, parts.customProps).join('\n')
   const blocks: string[] = []
   pptxSlideOrder(parts).forEach((slide, i) => {
     const ctx = pptxRenderCtx(parts, slide)
@@ -3362,7 +3445,7 @@ export function extractXlsxText(filePath: string): string {
       XLSX_SHEET_RE.test(n) ||
       XLSX_SHEET_RELS_RE.test(n) ||
       XLSX_COMMENTS_RE.test(n) ||
-      n === DOC_CORE_PROPS_ENTRY
+      n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
   const workbook = decodeEntry(entries[XLSX_WORKBOOK_ENTRY])
   if (!workbook) throw new Error(`缺少 ${XLSX_WORKBOOK_ENTRY}，不是有效的 XLSX 文件`)
@@ -3391,7 +3474,11 @@ export function extractXlsxText(filePath: string): string {
   }
   if (sheets.length === 0) throw new Error('没有找到工作表（xl/worksheets/*.xml）')
 
-  const meta = corePropsLine(parseCoreProps(decodeEntry(entries[DOC_CORE_PROPS_ENTRY])))
+  const meta = docPropsLines(
+    decodeEntry(entries[DOC_CORE_PROPS_ENTRY]),
+    decodeEntry(entries[DOC_APP_PROPS_ENTRY]),
+    decodeEntry(entries[DOC_CUSTOM_PROPS_ENTRY])
+  ).join('\n')
   const blocks: string[] = []
   for (const sheet of sheets) {
     const sheetXml = decodeEntry(entries[sheet.path]) ?? ''
