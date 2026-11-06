@@ -1698,6 +1698,32 @@ XLSX 单元格只剩算好的值（`SUM(B1:B9)` 变成 `30`），agent 不知道
 - **回归红线**：没有 endnotes / docPr alt / commentsExtended 的文档，输出与改动前**逐字一致**。
 - **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
 
+### 5.48 XLSX 定义名称 / 数据校验 / 表格对象 / 线程批注 + DOCX 图片 alt 兜底（第四十四阶段）
+
+补四类 XLSX 真缺口与一处 DOCX 残余：`workbook.xml` 的 `definedNames` 整段被忽略、
+worksheet 的 `dataValidations`（下拉候选）看不到、`xl/tables/tableN.xml` 表格对象名看不到、
+Excel 365 的 `threadedComments` 线程批注看不到；另外 `wp:docPr` 全空时，
+WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
+
+- **定义名称**：`workbook.xml` 的 `definedNames` → 文档级置顶一行
+  `[定义名称] 销售额 → 数据!$A$1:$A$10 · Print_Area (工作表「数据」) → 数据!$A$1:$D$20`；
+  `_xlnm.` 内建前缀剥离、工作表级名标作用域（`localSheetId` 越界不标）、空值跳过、XML 实体解码。
+- **数据校验**：worksheet 的 `dataValidations` → 工作表末行
+  `[数据校验] C2:C20: 列表(是,否,待定)`；类型 / 操作符译成中文短语
+  （如「整数 介于 1~100」「日期 小于等于 45000」），认不出的原样显示；`type=none/any` 跳过；
+  列表是字面选项取引号内文本，是引用区域则原样显示公式。
+- **表格对象**：工作表 rels 指向的 `xl/tables/tableN.xml` → 工作表头行下一行
+  `[表格] 销售明细表 (A1:C10)`；一张表多个对象用「 · 」拼接；`name` 为空退 `displayName`。
+- **线程批注（Excel 365）**：`xl/threadedComments/*.xml` + `xl/persons/person.xml` →
+  单元格内联 `[批注(王五): 这是线程批注] [回复(赵六): 这是线程回复内容]`；
+  作者经 `personId → displayName` 解析；回复按文档顺序摊平挂根批注（与 DOCX 回复同套路）；
+  `resolutionState` 为 `resolved` / `accepted` 时标注「(已解决)」/「(已接受)」，未知状态不猜；
+  父批注找不到时按独立批注输出，成环时同样按独立批注兜底。
+- **DOCX 图片 alt 兜底**：`<wp:docPr>` 的 `descr` / `title` 都空时，退读 `<pic:cNvPr>` 的 `descr`；
+  优先级仍是 `descr` → `title` → `cNvPr@descr`，三者都空不出标记。
+- **回归红线**：没有这些部件的文档，输出与改动前**逐字一致**。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
 ---
 
 ## 6. 技能与文件库
@@ -1869,7 +1895,15 @@ PPTX / XLSX 元数据行与正文紧邻不插空行；畸形 XML 不影响正文
 `wp:docPr` 的 `descr` 优先 `title` 兜底内联 `[图片: …]`，都空不出标记、`name` 不进输出；
 `commentsExtended.xml` 的 `paraId → paraIdParent` 建回复链，回复摊平挂根批注之后
 `[回复(作者): 文本]`、自带锚点不重复出，父未知按独立批注处理；
-没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.47）。
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.47）、
+**XLSX 定义名称 / 数据校验 / 表格对象 / 线程批注**（`workbook.xml` 的 `definedNames` → 置顶
+`[定义名称] 名 → 目标`（`_xlnm.` 剥离、工作表级名标作用域）；worksheet 的 `dataValidations`
+→ 表末 `[数据校验] 范围: 类型 描述`（类型 / 操作符译中文，不认原样，`none/any` 跳过）；
+`xl/tables/tableN.xml` → `[表格] 名字 (区间)`（多表「 · 」拼接）；
+`xl/threadedComments/*` + `xl/persons/person.xml` → 格内 `[批注(作者): …] [回复(作者): …]`
+（回复摊平挂根、决议态标「(已解决)」/「(已接受)」、父未知按独立批注）；
+另补 DOCX 图片 alt 第三兜底源 `pic:cNvPr@descr`（`descr → title → cNvPr@descr`）；
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.48）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

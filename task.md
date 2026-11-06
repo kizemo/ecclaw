@@ -312,6 +312,19 @@
 > （回归红线断言锁死）。只改 `document-preview.ts`，工具数仍 27。全量回归 `run76-*`（phase3r C3 为事件库
 > >2000 条既有环境失败）。交接见 `handoff-ecclaw-phase4r-final-2026-11-06.md`。
 
+> **第四十四阶段（XLSX 定义名称 / 数据校验 / 表格对象 / 线程批注 + DOCX 图片 alt 兜底）已完成并真机验证（`phase4s-e2e.cjs` **36/36** 全绿 + 自测 **45/45**）**：
+> `workbook.xml` 的 `definedNames` 此前整段被忽略 → 补文档级置顶行 `[定义名称] 名 → 目标`
+> （`_xlnm.` 内建前缀剥离、工作表级名标作用域、`localSheetId` 越界不标）；
+> worksheet 的 `dataValidations`（下拉候选）此前看不到 → 补工作表末行 `[数据校验] 范围: 类型 描述`
+> （类型 / 操作符译中文短语，认不出原样，`type=none/any` 跳过）；
+> `xl/tables/tableN.xml` 表格对象名此前看不到 → 补 `[表格] 名字 (区间)`（多表「 · 」拼接）；
+> Excel 365 的 `xl/threadedComments/*` + `xl/persons/person.xml` 此前看不到 → 补格内
+> `[批注(作者): …] [回复(作者): …]`（回复摊平挂根、决议态标「(已解决)」/「(已接受)」、父未知按独立批注）；
+> 另补 DOCX 图片 alt 第三兜底源 `pic:cNvPr@descr`（`descr → title → cNvPr@descr`，WPS/LibreOffice 写法）。
+> 无这些部件的文档输出**逐字不变**（回归红线断言锁死）。只改 `document-preview.ts`，工具数仍 27。
+> 全量回归 `run77-*`（phase3r C3 为事件库 >2000 条既有环境失败；phase4o 一条位置锁死断言因
+> 新增文档级行而过期，改成顺序断言后全绿，零产品改动）。交接见 `handoff-ecclaw-phase4s-final-2026-11-07.md`。
+
 ## 第二十三阶段（2026-11-04）：PPTX / XLSX 抽取 ✅
 
 | # | 交付项 | 状态 | 证据 |
@@ -620,6 +633,37 @@
 - alt 标记进 `docxRuns` 后自动覆盖正文 + 表格单元格两条 run 渲染路径；
   `docxParagraphText` 纯文本路径（脚注/批注正文）不受影响 —— 正是既有口径。
 - 无回复链部件的文档走不进新分支 → 输出逐字不变（th3/mix1 双断言锁死回归红线）。
+
+## 第四十四阶段（2026-11-07）：XLSX 定义名称 / 数据校验 / 表格对象 / 线程批注 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **定义名称**：新函数 `parseXlsxDefinedNames()` 读 `xl/workbook.xml` 的 `<definedNames>` →
+   文档级置顶行 `[定义名称] 名 → 目标`；`_xlnm.` 内建前缀剥离、工作表级名标作用域
+   （`localSheetId` 越界不标）、空值跳过、XML 实体解码。
+2. **数据校验**：新函数 `parseXlsxDataValidations()` 读 worksheet 的 `<dataValidations>` →
+   工作表末行 `[数据校验] 范围: 类型 描述`；类型 / 操作符译中文短语（`DATAVAL_TYPE_TEXT` /
+   `DATAVAL_OPERATOR_TEXT`，认不出原样）；`type=none/any` 跳过；列表引号内是字面选项、
+   引用区域则原样显示公式；`between/notBetween` 拼 `f1~f2`。
+3. **表格对象**：新函数 `parseXlsxTableLine()` 读工作表 rels 指向的 `xl/tables/tableN.xml` →
+   `[表格] 名字 (区间)` 紧跟 `[工作表 X]` 表头行；多表「 · 」拼接；`name` 空退 `displayName`。
+4. **线程批注**：新函数 `parseXlsxPersons()` + `parseXlsxThreadedComments()` 读
+   `xl/threadedComments/*.xml` + `xl/persons/person.xml` → 单元格内联 `[批注(作者): …]` +
+   `[回复(作者): …]`；作者经 `personId → displayName` 解析；回复摊平挂根（同 DOCX 口径）；
+   `resolutionState` resolved/accepted 标注、未知态不猜；父未知与成环均按独立批注兜底；
+   rels 缺失按命名约定 `xl/threadedComments/threadedComment{N}.xml` 兜底。
+5. **DOCX alt 第三兜底源**：`docxRuns` 里 `wp:docPr` 的 `descr`/`title` 全空时退读
+   `pic:cNvPr@descr`（WPS/LibreOffice 常见写法）；优先序 descr → title → cNvPr@descr 不动。
+
+**第四十四阶段实证发现**：
+- 候选清单**第 9 次过期**：探针复验抓出 phase4r 的残余真缺口（`pic:cNvPr@descr` 兜底），
+  同时证伪两条伪缺口（descr 在时 title 不输出是设计；PPTX 厂商串实为 "Microsoft Office PowerPoint"）。
+- **旧套件的位置锁死断言会过期**：phase4o 断言 `lines[1] === '[工作表 数据]'`，
+  新增文档级 `[定义名称]` 行后该行不再紧邻 → 属断言过期而非产品回归，
+  改成顺序断言（工作表行之前只允许文档级标记行）后全绿，**零产品改动**。
+- `previewDocument` 只收文件库内路径 → 秒级自测对真 fixture 必须先拷进文件库；
+  DOCX **没有导出函数**，只能走 `previewDocument`（XLSX 可直调导出的 `extractXlsxText`）。
+- 线程批注的 `id=` 正则靠大小写天然避开 `personId` / `parentId`（都大写 Id）。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 
