@@ -752,7 +752,12 @@ function docxRuns(
         const num = endnoteNumbers.get(t[4])
         if (num) text += `[${num}]`
       } else {
-        const alt = docxImageAlt(t[5] ?? '')
+        // alt 优先 wp:docPr（descr→title）；都空退读 pic:cNvPr@descr（WPS/LibreOffice 常见写法）
+        let alt = docxImageAlt(t[5] ?? '')
+        if (!alt) {
+          const m = /<(?:[\w.-]+:)?cNvPr\b([^>]*)>/.exec(body)
+          if (m) alt = decodeXmlEntities(/\bdescr="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? '').trim()
+        }
         if (alt) text += `[图片: ${alt}]`
       }
     }
@@ -1290,6 +1295,9 @@ const XLSX_STYLES_ENTRY = 'xl/styles.xml'
 const XLSX_SHEET_RE = /^xl\/worksheets\/sheet\d+\.xml$/
 const XLSX_SHEET_RELS_RE = /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/
 const XLSX_COMMENTS_RE = /^xl\/comments\d+\.xml$/
+const XLSX_TABLES_RE = /^xl\/tables\/table\d+\.xml$/
+const XLSX_THREADED_COMMENTS_RE = /^xl\/threadedComments\/[^/]+\.xml$/
+const XLSX_PERSONS_ENTRY = 'xl/persons/person.xml'
 
 /** 解码 zip 条目为 UTF-8 文本 */
 function decodeEntry(entry: Uint8Array | undefined): string {
@@ -3357,10 +3365,190 @@ function parseXlsxComments(xml: string): Map<string, Array<{ author: string; tex
   return map
 }
 
-/** 单元格键 → 链接 / 批注标记文本（`[链接: …] [批注(作者): …]`） */
+/** workbook.xml definedNames → 置顶行 `[定义名称] 销售额 → 数据!$A$1:$A$10 …`（工作表级名标作用域；无则 ''） */
+function parseXlsxDefinedNames(workbook: string, sheetNames: string[]): string {
+  const items: string[] = []
+  for (const m of workbook.matchAll(/<definedName\b([^>]*?)>([\s\S]*?)<\/definedName>/g)) {
+    const name = decodeXmlEntities(/\bname="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? '')
+      .trim()
+      .replace(/^_xlnm\./, '')
+    const value = decodeXmlEntities((m[2] ?? '').replace(/<[^>]*>/g, '')).trim()
+    if (!name || !value) continue
+    const local = /\blocalSheetId="(\d+)"/.exec(m[1] ?? '')?.[1]
+    // localSheetId 是 `<sheets>` 里的 0 起下标；越界不标（不猜）
+    const scope =
+      local !== undefined && Number(local) < sheetNames.length
+        ? ` (工作表「${sheetNames[Number(local)]}」)`
+        : ''
+    items.push(`${name}${scope} → ${value}`)
+  }
+  return items.length === 0 ? '' : `[定义名称] ${items.join(' · ')}`
+}
+
+/** 数据校验类型 / 操作符的中文译名（认不出原样显示） */
+const DATAVAL_TYPE_TEXT: Record<string, string> = {
+  whole: '整数',
+  decimal: '小数',
+  textLength: '文本长度',
+  date: '日期',
+  time: '时间',
+  list: '列表',
+  custom: '自定义公式'
+}
+const DATAVAL_OPERATOR_TEXT: Record<string, string> = {
+  between: '介于',
+  notBetween: '不介于',
+  equal: '等于',
+  notEqual: '不等于',
+  greaterThan: '大于',
+  lessThan: '小于',
+  greaterThanOrEqual: '大于等于',
+  lessThanOrEqual: '小于等于'
+}
+
+/** worksheet 的 dataValidations → 表末行 `[数据校验] 范围: 描述`（空单元格不跟格关联；无则 ''） */
+function parseXlsxDataValidations(sheetXml: string): string {
+  const block = /<dataValidations\b[^>]*>([\s\S]*?)<\/dataValidations>/.exec(sheetXml)?.[1] ?? ''
+  const items: string[] = []
+  for (const m of block.matchAll(/<dataValidation\b([^>]*?)(\/>|>([\s\S]*?)<\/dataValidation>)/g)) {
+    const attrs = m[1] ?? ''
+    const inner = m[3] ?? ''
+    const type = /\btype="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    if (type === '' || type === 'none' || type === 'any') continue
+    const sqref = /\bsqref="([^"]*)"/.exec(attrs)?.[1]?.trim() ?? ''
+    if (!sqref) continue
+    const formula = (name: string): string =>
+      decodeXmlEntities(
+        new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)</${name}>`).exec(inner)?.[1] ?? ''
+      ).trim()
+    let desc: string
+    if (type === 'list') {
+      const f1 = formula('formula1')
+      // `"a,b,c"` 是字面选项；否则是引用区域 → 原样显示公式
+      desc = `列表(${/^".*"$/.test(f1) ? f1.slice(1, -1) : f1})`
+    } else if (type === 'custom') {
+      desc = `自定义公式(${formula('formula1')})`
+    } else {
+      const typeText = DATAVAL_TYPE_TEXT[type] ?? type
+      const op = /\boperator="([^"]*)"/.exec(attrs)?.[1] ?? 'between'
+      const opText = DATAVAL_OPERATOR_TEXT[op] ?? op
+      const f1 = formula('formula1')
+      const f2 = formula('formula2')
+      const rangeLike = op === 'between' || op === 'notBetween'
+      desc = rangeLike && f2 ? `${typeText} ${opText} ${f1}~${f2}` : `${typeText} ${opText} ${f1}`
+    }
+    items.push(`${sqref}: ${desc}`)
+  }
+  return items.length === 0 ? '' : `[数据校验] ${items.join(' · ')}`
+}
+
+/** tables/tableN.xml → 一条表格对象 `名字 (区间)`（无名字返 ''；name 是显示名，displayName 兜底） */
+function parseXlsxTableLine(tableXml: string): string {
+  const attrs = /<table\b([^>]*)>/.exec(tableXml)?.[1] ?? ''
+  if (!attrs) return ''
+  const pick = (name: string): string =>
+    decodeXmlEntities(new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1] ?? '').trim()
+  const name = pick('name') || pick('displayName')
+  if (!name) return ''
+  const ref = pick('ref')
+  return ref ? `${name} (${ref})` : name
+}
+
+/** xl/persons/person.xml → personId → 显示名 */
+function parseXlsxPersons(xml: string): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const m of xml.matchAll(/<person\b([^>]*?)(\/>|>[\s\S]*?<\/person>)/g)) {
+    const id = /\bid="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? ''
+    const displayName = decodeXmlEntities(
+      /\bdisplayName="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? ''
+    ).trim()
+    if (id && displayName) map.set(id, displayName)
+  }
+  return map
+}
+
+/** 线程批注决议态译名（未知的态不标，不猜） */
+const THREAD_STATE_TEXT: Record<string, string> = { resolved: '已解决', accepted: '已接受' }
+
+/**
+ * threadedComments 部件 → 单元格键 → 批注标记（回复摊平挂根、按文档顺序；父未知 → 独立批注；成环 seen 兜底）。
+ * 作者经 person.xml 的 personId→displayName 解析；resolutionState 认得出才标注。
+ */
+function parseXlsxThreadedComments(
+  xml: string,
+  persons: Map<string, string>
+): Map<string, string> {
+  const map = new Map<string, string>()
+  if (!xml) return map
+  interface ThreadNode {
+    id: string
+    parentId: string
+    ref: string
+    author: string
+    text: string
+    state: string
+  }
+  const nodes: ThreadNode[] = []
+  for (const m of xml.matchAll(/<threadedComment\b([^>]*?)>([\s\S]*?)<\/threadedComment>/g)) {
+    const attrs = m[1] ?? ''
+    const pick = (name: string): string =>
+      decodeXmlEntities(
+        new RegExp(`(?:[\\w.-]+:)?${name}="([^"]*)"`).exec(attrs)?.[1] ?? ''
+      ).trim()
+    const ref = pick('ref')
+    const text = decodeXmlEntities((m[2] ?? '').replace(/<[^>]*>/g, '')).trim()
+    if (!ref || !text) continue
+    nodes.push({
+      id: pick('id'),
+      parentId: pick('parentId'),
+      ref,
+      author: persons.get(pick('personId')) ?? '',
+      text,
+      state: THREAD_STATE_TEXT[/\bresolutionState="([^"]*)"/.exec(attrs)?.[1] ?? ''] ?? ''
+    })
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const findRoot = (start: ThreadNode): ThreadNode | null => {
+    let cur = start
+    const seen = new Set([start.id])
+    while (cur.parentId) {
+      const parent = byId.get(cur.parentId)
+      if (!parent || seen.has(parent.id)) return null
+      seen.add(parent.id)
+      cur = parent
+    }
+    return cur
+  }
+  const repliesOf = new Map<string, ThreadNode[]>()
+  const replyIds = new Set<string>()
+  for (const n of nodes) {
+    if (!n.parentId) continue
+    const root = findRoot(n)
+    if (!root || root === n) continue
+    const list = repliesOf.get(root.id) ?? []
+    list.push(n)
+    repliesOf.set(root.id, list)
+    replyIds.add(n.id)
+  }
+  for (const n of nodes) {
+    if (replyIds.has(n.id)) continue
+    const head = n.state ? `[批注(${n.author})(${n.state}): ${n.text}]` : `[批注(${n.author}): ${n.text}]`
+    const parts = [head]
+    for (const r of repliesOf.get(n.id) ?? []) parts.push(`[回复(${r.author}): ${r.text}]`)
+    const marker = parts.join(' ')
+    for (const key of xlsxRefCellKeys(n.ref)) {
+      const prev = map.get(key)
+      map.set(key, prev ? `${prev} ${marker}` : marker)
+    }
+  }
+  return map
+}
+
+/** 单元格键 → 链接 / 批注 / 线程批注标记文本（`[链接: …] [批注(作者): …]`） */
 function xlsxCellExtras(
   links: Map<string, string>,
-  comments: Map<string, Array<{ author: string; text: string }>>
+  comments: Map<string, Array<{ author: string; text: string }>>,
+  threaded: Map<string, string>
 ): Map<string, string> {
   const map = new Map<string, string>()
   const add = (key: string, marker: string): void => {
@@ -3373,6 +3561,7 @@ function xlsxCellExtras(
     if (!marker) continue
     for (const key of xlsxRefCellKeys(ref)) add(key, marker)
   }
+  for (const [key, marker] of threaded) add(key, marker)
   return map
 }
 
@@ -3558,6 +3747,9 @@ export function extractXlsxText(filePath: string): string {
       XLSX_SHEET_RE.test(n) ||
       XLSX_SHEET_RELS_RE.test(n) ||
       XLSX_COMMENTS_RE.test(n) ||
+      XLSX_TABLES_RE.test(n) ||
+      XLSX_THREADED_COMMENTS_RE.test(n) ||
+      n === XLSX_PERSONS_ENTRY ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
   const workbook = decodeEntry(entries[XLSX_WORKBOOK_ENTRY])
@@ -3592,6 +3784,8 @@ export function extractXlsxText(filePath: string): string {
     decodeEntry(entries[DOC_APP_PROPS_ENTRY]),
     decodeEntry(entries[DOC_CUSTOM_PROPS_ENTRY])
   ).join('\n')
+  const definedLine = parseXlsxDefinedNames(workbook, sheets.map((s) => s.name))
+  const persons = parseXlsxPersons(decodeEntry(entries[XLSX_PERSONS_ENTRY]))
   const blocks: string[] = []
   for (const sheet of sheets) {
     const sheetXml = decodeEntry(entries[sheet.path]) ?? ''
@@ -3609,13 +3803,38 @@ export function extractXlsxText(filePath: string): string {
       if (guess && entries[guess]) commentsPath = guess
     }
     const comments = parseXlsxComments(commentsPath ? decodeEntry(entries[commentsPath]) ?? '' : '')
-    const extras = xlsxCellExtras(links, comments)
+    // 线程批注（Excel 365）：rels 指向 threadedComments 部件；rels 缺失按命名约定兜底（批注同款套路）
+    let threadXml = ''
+    const threadRel = relEntries.find((e) => e.type.endsWith('/threadedComment'))
+    if (threadRel && !isExternalTarget(threadRel.target)) {
+      threadXml = decodeEntry(entries[resolveRelTarget('xl/worksheets', threadRel.target)]) ?? ''
+    }
+    if (!threadXml) {
+      const no = /sheet(\d+)\.xml$/.exec(sheet.path)?.[1]
+      const guess = no ? `xl/threadedComments/threadedComment${no}.xml` : ''
+      if (guess && entries[guess]) threadXml = decodeEntry(entries[guess]) ?? ''
+    }
+    const threaded = parseXlsxThreadedComments(threadXml, persons)
+    const extras = xlsxCellExtras(links, comments, threaded)
     const rows = parseXlsxSheet(sheetXml, shared, styles, date1904, extras)
     if (rows.length === 0) continue
-    blocks.push(`[工作表 ${sheet.name}]\n${rows.join('\n')}`)
+    // 表格对象：rels 里 Type 结尾 /table 的部件（一表可多个，「 · 」拼一行）
+    const tableFrags: string[] = []
+    for (const e of relEntries) {
+      if (!e.type.endsWith('/table') || isExternalTarget(e.target)) continue
+      const frag = parseXlsxTableLine(
+        decodeEntry(entries[resolveRelTarget('xl/worksheets', e.target)]) ?? ''
+      )
+      if (frag) tableFrags.push(frag)
+    }
+    const tableLine = tableFrags.length > 0 ? `[表格] ${tableFrags.join(' · ')}\n` : ''
+    const dvLine = parseXlsxDataValidations(sheetXml)
+    const tail = dvLine ? `\n${dvLine}` : ''
+    blocks.push(`[工作表 ${sheet.name}]\n${tableLine}${rows.join('\n')}${tail}`)
   }
   const body = normalizeText(blocks.join('\n\n'))
-  return meta ? `${meta}\n${body}` : body
+  const top = [meta, definedLine].filter((s) => s !== '').join('\n')
+  return top ? `${top}\n${body}` : body
 }
 
 /* ------------------------------ 对外接口 ------------------------------ */
