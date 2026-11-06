@@ -242,6 +242,22 @@
 > （既有 DOCX / XLSX / PPTX 输出逐字不变）；e2e **50/50**；
 > ✅ **全量回归 run71 二十五套 842/842 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4m-final-2026-11-06.md`。
+> **第三十九阶段（PPTX 超链接 + PPTX 批注 · 点向哪里 + 谁说了什么）已完成并真机验证（`phase4n-e2e.cjs` **78/78** 全绿）**：
+> §5.41（phase4l）把**链接目标**与**审阅意见**补给了 DOCX / XLSX，PPTX 成了**三格式里唯一的一致性缺口** ——
+> 幻灯片上的 `a:hlinkClick` 点向哪里不可知、`ppt/comments/*.xml` 里的演讲者批注**整条不读**，本轮补齐：
+> slide rels 里 Type 以 `/hyperlink` 结尾的关系 → `rId` → Target，`a:hlinkClick` 按 `r:id` 查表
+> → `[链接: <目标>]`；**只有带协议的外部目标才输出**，内部跳转（`ppaction://hlinksldjump` / 指向其它 slide）**不输出**；
+> 批注部件走 Type 以 `/comments` 结尾的关系（旧的 `comment1.xml` / 新的 `modernComment_*.xml`），
+> **两代格式都认**（`p:cm` / `p188:cm`；正文旧的在 `p:text`、新的在 `p188:txBody` 的 `a:t`），
+> 作者按 `authorId` 到 `ppt/commentAuthors.xml` / `ppt/authors.xml` 查、**查不到留空**、**只出作者不出日期**；
+> **落位**：run/段落级链接 → 该段落行末、形状级链接 → 该形状**首个块**末尾（图片挂 `[图片: alt]` 行）、
+> 批注按 `p:cm@idx` 匹配形状 `p:cNvPr@id` 挂被评论形状首行末、
+> **挂不到形状的批注落该页末尾且备注仍在最后一行**；顺序恒为 **文本 → 链接 → 批注**；
+> **表格不挂形状级标记**（会破坏 Markdown 表）；只改 `electron/main/document-preview.ts` 一个文件；
+> MCP 工具数仍 **27**，无新增依赖；无链接无批注的 PPTX **输出逐字不变**；
+> 秒级自测 **74/74**（先 RED 58/74）；交叉复验 phase4m **72/72** / phase4l **41/41** / phase4j **30/30** / phase4k（输出逐字不变）；
+> e2e **78/78**；✅ **全量回归 run72 二十六套 920/920 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4n-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -507,6 +523,36 @@
 7. **空值格带公式要放行**：XLSX `filled` 过滤若仍按「有值」过滤 → `=0` 的公式格整格消失。
 8. **顺序要一次定死**：XLSX 值 → 公式 → 链接 / 批注 → **颜色恒在最末**；
    DOCX 文本 → 修订 → 链接 → 批注（修订在最前，因为它解释的是正文本身）。
+
+## 第三十九阶段（2026-11-06）：PPTX 超链接 + PPTX 批注（点向哪里 + 谁说了什么） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 探针扫 **13 根新轴**（不照抄 4m 候选表）后选定 —— **候选清单第 6 次被推翻**。判据是**一致性缺口**：4l 已把链接/批注补给 DOCX / XLSX，PPTX 是三者里唯一缺的。同时实测确认真缺口但本轮不选：DOCX 尾注、`docProps/core.xml` 元数据、DOCX 图片 alt、DOCX 批注回复、PDF 链接/注释/元数据、XLSX 定义名称/数据有效性；非缺口：DOCX TOC 域（域结果已在输出）、XLSX 隐藏行列、XLSX 富文本 |
+| 2 | PPTX 超链接 | ✅ | slide rels 里 Type 以 `/hyperlink` 结尾 → `rId` → Target（`pptxLinkTargets()`）；页面 `a:hlinkClick` 的 `r:id` 查表 → `[链接: <目标>]`（`pptxLinkMarks()`）；**只有带协议的外部目标才输出**，内部跳转（`ppaction://hlinksldjump` / 指向其它 slide）不输出。**形状级**链接单独从 `p:cNvPr` 取（`pptxShapeLinkMarks()`），段落级扫 `a:p` —— 两处分开，互不混入 |
+| 3 | PPTX 批注 | ✅ | slide rels 里 Type 以 `/comments` 结尾 → 部件（旧的 `ppt/comments/comment1.xml` / 新的 `modernComment_*.xml`），用新增 `relTargetsByType()` 取**全部**（一页可能挂多个批注部件）；**两代格式都认**：旧 `p:cm`（正文 `p:text`）/ 新 `p188:cm`（正文 `p188:txBody` 的 `a:t`）；作者从 `ppt/commentAuthors.xml` / `ppt/authors.xml` 按 `authorId` 查，查不到留空，只出作者不出日期 |
+| 4 | 落位与顺序 | ✅ | 段落内链接挂该段落行末；形状级链接与归属批注挂该形状**首个块**末尾（图片挂 `[图片: alt]` 行）；批注按 `p:cm@idx` 匹配形状 `p:cNvPr@id`；**挂不到形状的批注落该页末尾**，**备注仍在最后一行**；顺序恒为 **文本 → 链接 → 批注**；**`p:graphicFrame` 表格不挂形状级标记**（会破坏 Markdown 表） |
+| 5 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` 全不动 → **MCP 工具数仍 27**；**无新增依赖**；**无链接无批注的 PPTX 输出逐字不变**；备注页调用 `pptxShapeLines()` 不传 ctx → 行为不变 |
+| 6 | e2e + 回归 | ✅ | `phase4n-selftest.cjs` **74/74**（9 夹具整行相等 + 行数 + kind + error + 正向标记计数 + 负向；先 RED 58/74）；交叉复验 `phase4m-selftest.cjs` **72/72** / `phase4l-selftest.cjs` **41/41** / `phase4j-selftest.cjs` **30/30** / `phase4k`（PPTX 输出逐字不变）；`phase4n-e2e.cjs` **78/78**（工具面 3 · 抽取 54 · 负向 6 · 界面 4；产物 `run72-phase4n.log`）；**全量回归 run72 二十六套 920/920 全绿**（FAIL 全 0；摘要 `run72-summary.txt`）。未跑真站 phase3s/3q |
+
+第三十九阶段实证发现：
+
+1. **候选清单会过期 —— 这是第 6 次**：phase4m handoff §8 的清单第 6 次被实测推翻（13 根新轴）。
+   **先探针扫新轴再选题**，别照抄上轮候选表。
+2. **选题看一致性缺口**：DOCX / XLSX 已有链接与批注、PPTX 独缺 —— 同类信息在三种格式间的不对称，
+   是最好找也最好解释的选题；且能完全复用现成的 `parseRelEntries` / `isExternalTarget` / `resolveRelTarget`。
+3. **PPTX 批注有两代格式**：旧 `p:cm` + `ppt/commentAuthors.xml`；新 `p188:cm`（正文在 `p188:txBody` 里的
+   `a:t`）+ `ppt/authors.xml`。**只认一种就会让另一代格式的 PPTX 批注整条丢失**。
+4. **作者表的容器标签不能当作者**：`p:cmAuthor` / `p188:author` 是作者，
+   `p:cmAuthorLst` / `p188:authorLst` 是容器 → 正则必须靠 `\b` 卡住，否则会产出一个名字叫 "Lst" 的假作者。
+5. **形状级链接必须单独从 `p:cNvPr` 里取**：段落级扫 `a:p` 抓不到它（它挂在形状属性上）；
+   反过来全文扫 `a:hlinkClick` 又会把形状级混进段落级。**两处分开取、各自落位**。
+6. **自闭合标签第三次踩**：`p:cNvPr .../>` 用裸 `[^>]*` 匹配会一路吞到后面某个 `</p:cNvPr>`
+   → 用 `(\/>|>[\s\S]*?<\/p:cNvPr>)` 分支（与 DOCX 修订同一套路）。
+7. **表格不能挂形状级标记**：`p:graphicFrame` 转出来的 Markdown 管道表，行尾追加任何标记都会破坏表结构
+   → 显式 `continue` 跳过。
+8. **一页可能有多个批注部件**：`relTargetByType()` 只返回第一个（留给备注页用），
+   批注必须用新加的 `relTargetsByType()` 取全部。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 

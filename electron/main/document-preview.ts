@@ -1117,25 +1117,35 @@ const PPTX_CONTAINER_TAGS =
 const PPTX_SLIDE_RELS_RE = /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/
 /** 备注页 */
 const PPTX_NOTES_RE = /^ppt\/notesSlides\/notesSlide\d+\.xml$/
+/** 批注部件（旧的 ppt/comments/comment1.xml / 新的 ppt/comments/modernComment_*.xml） */
+const PPTX_COMMENTS_RE = /^ppt\/comments\/[^/]+\.xml$/
+/** 作者表部件（旧的 ppt/commentAuthors.xml / 新的 ppt/authors.xml） */
+const PPTX_AUTHORS_RE = /^ppt\/[^/]*[Aa]uthor[^/]*\.xml$/
 
 /** 只是占位的形状类型：页码 / 日期 / 页眉页脚（抽出来是噪音，不是内容） */
 const PPTX_SKIP_PLACEHOLDERS = new Set(['sldNum', 'dt', 'hdrFtr', 'ftr'])
 
-/** PPTX 部件：幻灯片 + 每页的 rels + 备注页 */
+/** PPTX 部件：幻灯片 + 每页的 rels + 备注页 + 批注 + 作者表 */
 interface PptxParts {
   presentation: string
   presentationRels: string
   slides: Array<{ name: string; xml: string; rels: string }>
   notes: Record<string, string>
+  /** 批注部件：zip 内路径 → xml */
+  comments: Record<string, string>
+  /** 作者表部件：zip 内路径 → xml */
+  authors: Record<string, string>
 }
 
-/** 形状（p:sp）里的文字：每个段落一行 */
-function pptxShapeLines(shapeXml: string): string[] {
+/** 形状（p:sp）里的文字：每个段落一行（段落里的超链接挂在该行末尾） */
+function pptxShapeLines(shapeXml: string, ctx?: PptxRenderCtx): string[] {
   const lines: string[] = []
   for (const body of xmlChildElements(shapeXml, PPTX_CONTAINER_TAGS, ['p:txBody'])) {
     for (const para of xmlChildElements(body.body, PPTX_CONTAINER_TAGS, ['a:p'])) {
       const text = pptxParagraphText(para.body).trim()
-      if (text) lines.push(text)
+      if (!text) continue
+      const marks = ctx ? pptxLinkMarks(para.body, ctx.links) : []
+      lines.push(marks.length > 0 ? `${text} ${marks.join(' ')}` : text)
     }
   }
   return lines
@@ -1151,6 +1161,106 @@ function pptxPictureAlt(picXml: string): string {
   const nv = /<p:nvPicPr(?:\s[^>]*)?>[\s\S]*?<\/p:nvPicPr>/.exec(picXml)?.[0] ?? picXml
   const descr = /\bdescr="([^"]*)"/.exec(nv)?.[1] ?? ''
   return decodeXmlEntities(descr).trim()
+}
+
+/* ---------------------- PPTX 链接 / 批注 ---------------------- */
+
+/** PPTX 一条批注 */
+interface PptxComment {
+  author: string
+  text: string
+  /** 归属形状 id（p:cm@idx）；没有就是空串 */
+  shapeId: string
+}
+
+/** 一页幻灯片的渲染上下文 */
+interface PptxRenderCtx {
+  /** rId → 外部链接 URL（内部跳转不进这里） */
+  links: Map<string, string>
+  /** 形状 id → 该形状上的批注 */
+  comments: Map<string, PptxComment[]>
+  /** 已经挂到形状上的形状 id（剩下的 = 找不到归属） */
+  used: Set<string>
+  /** 没有归属形状 id 的批注 → 该页末尾 */
+  loose: PptxComment[]
+}
+
+/** slide rels 里的外部超链接：rId → URL（内部跳转 / 内部部件不进） */
+function pptxLinkTargets(relsXml: string): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const e of parseRelEntries(relsXml)) {
+    if (!e.type.endsWith('/hyperlink')) continue
+    if (!isExternalTarget(e.target)) continue
+    map.set(e.id, e.target)
+  }
+  return map
+}
+
+/** xml 里的超链接标记（按出现顺序；r:id 查不到就跳过） */
+function pptxLinkMarks(xml: string, links: Map<string, string>): string[] {
+  const out: string[] = []
+  for (const m of xml.matchAll(/<a:hlinkClick\b([^>]*?)\/?>/g)) {
+    const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    if (!rid) continue
+    const url = links.get(rid)
+    if (url) out.push(`[链接: ${url}]`)
+  }
+  return out
+}
+
+/** 形状自己的 id（p:cNvPr@id）：批注靠它找归属 */
+function pptxShapeId(shapeXml: string): string {
+  return /<p:cNvPr\b[^>]*?\bid="([^"]*)"/.exec(shapeXml)?.[1] ?? ''
+}
+
+/**
+ * 形状级链接标记（p:cNvPr 里的 a:hlinkClick —— 整个形状可点）。
+ * 靠「属性段是否以 / 结尾」区分自闭合标签（与 DOCX 修订同一套路）。
+ */
+function pptxShapeLinkMarks(shapeXml: string, links: Map<string, string>): string[] {
+  const cnv = /<p:cNvPr\b([^>]*?)(\/>|>([\s\S]*?)<\/p:cNvPr>)/.exec(shapeXml)
+  if (!cnv) return []
+  return pptxLinkMarks(cnv[3] ?? '', links)
+}
+
+/** 批注正文：旧格式 p:text；新格式 p188:txBody 里的 a:t */
+function pptxCommentText(body: string): string {
+  const direct = /<(?:\w+:)?text\b[^>]*>([\s\S]*?)<\/(?:\w+:)?text>/.exec(body)
+  if (direct) return decodeXmlEntities(direct[1]).trim()
+  const parts: string[] = []
+  for (const m of body.matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)) {
+    parts.push(decodeXmlEntities(m[1]))
+  }
+  return parts.join('').trim()
+}
+
+/** 批注部件 → 批注清单（旧的 p:cm / 新的 p188:cm 都认） */
+function parsePptxComments(xml: string, authors: Map<string, string>): PptxComment[] {
+  const out: PptxComment[] = []
+  if (!xml) return out
+  for (const m of xml.matchAll(/<((?:\w+:)?)cm\b([^>]*?)(\/>|>([\s\S]*?)<\/\1cm>)/g)) {
+    const attrs = m[2] ?? ''
+    const body = m[4] ?? ''
+    if (!body) continue
+    const authorId = /\bauthorId="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    const shapeId = /\bidx="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    const text = pptxCommentText(body)
+    if (!text) continue
+    out.push({ author: authors.get(authorId) ?? '', text, shapeId })
+  }
+  return out
+}
+
+/** 作者表：commentAuthors.xml / authors.xml → authorId → 姓名 */
+function parsePptxAuthors(xml: string): Map<string, string> {
+  const map = new Map<string, string>()
+  if (!xml) return map
+  for (const m of xml.matchAll(/<(?:\w+:)?(?:cm)?[Aa]uthor\b([^>]*?)\/?>/g)) {
+    const id = /\bid="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    const name = /\bname="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    if (id && name) map.set(id, decodeXmlEntities(name))
+  }
+  return map
 }
 
 /** 表格单元格文本：多段用空格连接（沿用 DOCX 口径） */
@@ -1227,8 +1337,11 @@ function pptxNotesText(notesXml: string): string {
   return (bodyLines.length > 0 ? bodyLines : otherLines).join(' ')
 }
 
-/** 一页 spTree 里的内容块：形状文字 / 表格 / 图片 alt，按形状在页面里的先后顺序 */
-function pptxTreeBlocks(treeXml: string): string[] {
+/**
+ * 一页 spTree 里的内容块：形状文字 / 表格 / 图片 alt，按形状在页面里的先后顺序。
+ * 形状级链接与该形状的批注挂在它的首个块末尾（表格不挂，会破坏 Markdown 表）。
+ */
+function pptxTreeBlocks(treeXml: string, ctx: PptxRenderCtx): string[] {
   const blocks: string[] = []
   for (const child of xmlChildElements(treeXml, PPTX_CONTAINER_TAGS, [
     'p:sp',
@@ -1236,12 +1349,13 @@ function pptxTreeBlocks(treeXml: string): string[] {
     'p:graphicFrame',
     'p:grpSp'
   ])) {
+    const start = blocks.length
     if (child.tag === 'p:sp') {
       if (PPTX_SKIP_PLACEHOLDERS.has(pptxPlaceholderType(child.body))) continue
-      blocks.push(...pptxShapeLines(child.body))
+      blocks.push(...pptxShapeLines(child.body, ctx))
     } else if (child.tag === 'p:grpSp') {
       const tree = xmlChildElements(child.body, PPTX_CONTAINER_TAGS, ['p:spTree'])[0]
-      if (tree) blocks.push(...pptxTreeBlocks(tree.body))
+      if (tree) blocks.push(...pptxTreeBlocks(tree.body, ctx))
     } else if (child.tag === 'p:graphicFrame') {
       const table = pptxTableMarkdown(child.body)
       if (table) blocks.push(table)
@@ -1249,13 +1363,26 @@ function pptxTreeBlocks(treeXml: string): string[] {
       const alt = pptxPictureAlt(child.body)
       if (alt) blocks.push(`[图片: ${alt}]`)
     }
+    if (child.tag === 'p:graphicFrame') continue
+    const marks = pptxShapeLinkMarks(child.body, ctx.links)
+    const id = pptxShapeId(child.body)
+    if (id) {
+      const cs = ctx.comments.get(id)
+      if (cs) {
+        ctx.used.add(id)
+        for (const c of cs) marks.push(`[批注(${c.author}): ${c.text}]`)
+      }
+    }
+    if (marks.length > 0 && blocks.length > start) {
+      blocks[start] = `${blocks[start]} ${marks.join(' ')}`
+    }
   }
   return blocks
 }
 
 /** 一页（slideN.xml）里的内容块 */
-function pptxSlideBlocks(slideXml: string): string[] {
-  return pptxTreeBlocks(pptxSpTreeBody(slideXml))
+function pptxSlideBlocks(slideXml: string, ctx: PptxRenderCtx): string[] {
+  return pptxTreeBlocks(pptxSpTreeBody(slideXml), ctx)
 }
 
 /** rels 里按关系类型找目标路径（Type 以 typeSuffix 结尾） */
@@ -1267,6 +1394,18 @@ function relTargetByType(relsXml: string, typeSuffix: string, baseDir: string): 
     if (target) return resolveRelTarget(baseDir, target)
   }
   return ''
+}
+
+/** rels 里按关系类型找全部目标路径（Type 以 typeSuffix 结尾） */
+function relTargetsByType(relsXml: string, typeSuffix: string, baseDir: string): string[] {
+  const out: string[] = []
+  for (const m of relsXml.matchAll(/<Relationship\s[^>]*\/>/g)) {
+    const type = /\bType="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    if (!type.endsWith(typeSuffix)) continue
+    const target = /\bTarget="([^"]*)"/.exec(m[0])?.[1]
+    if (target) out.push(resolveRelTarget(baseDir, target))
+  }
+  return out
 }
 
 /** slideN.xml 的序号（用于兜底排序） */
@@ -1283,7 +1422,9 @@ function readPptxParts(filePath: string): PptxParts {
       n === PPTX_PRESENTATION_RELS ||
       PPTX_SLIDE_RE.test(n) ||
       PPTX_SLIDE_RELS_RE.test(n) ||
-      PPTX_NOTES_RE.test(n)
+      PPTX_NOTES_RE.test(n) ||
+      PPTX_COMMENTS_RE.test(n) ||
+      PPTX_AUTHORS_RE.test(n)
   )
   const dec = (u: Uint8Array | undefined): string =>
     u ? new TextDecoder('utf-8').decode(u) : ''
@@ -1292,6 +1433,10 @@ function readPptxParts(filePath: string): PptxParts {
   if (slideNames.length === 0) throw new Error('没有找到幻灯片（ppt/slides/*.xml）')
   const notes: Record<string, string> = {}
   for (const n of names.filter((n) => PPTX_NOTES_RE.test(n))) notes[n] = dec(files[n])
+  const comments: Record<string, string> = {}
+  for (const n of names.filter((n) => PPTX_COMMENTS_RE.test(n))) comments[n] = dec(files[n])
+  const authors: Record<string, string> = {}
+  for (const n of names.filter((n) => PPTX_AUTHORS_RE.test(n))) authors[n] = dec(files[n])
   const slides = slideNames
     .sort((a, b) => slideNo(a) - slideNo(b))
     .map((name) => ({
@@ -1303,7 +1448,9 @@ function readPptxParts(filePath: string): PptxParts {
     presentation: dec(files[PPTX_PRESENTATION_ENTRY]),
     presentationRels: dec(files[PPTX_PRESENTATION_RELS]),
     slides,
-    notes
+    notes,
+    comments,
+    authors
   }
 }
 
@@ -1331,16 +1478,46 @@ function pptxSlideOrder(parts: PptxParts): PptxParts['slides'] {
   return parts.slides
 }
 
+/** 一页幻灯片的渲染上下文：外部链接 + 批注（按形状 id 分组） */
+function pptxRenderCtx(parts: PptxParts, slide: PptxParts['slides'][number]): PptxRenderCtx {
+  const authors = new Map<string, string>()
+  Object.keys(parts.authors).forEach((p) => {
+    parsePptxAuthors(parts.authors[p]).forEach((name, id) => authors.set(id, name))
+  })
+  const comments = new Map<string, PptxComment[]>()
+  const loose: PptxComment[] = []
+  relTargetsByType(slide.rels, '/comments', 'ppt/slides').forEach((p) => {
+    parsePptxComments(parts.comments[p] ?? '', authors).forEach((c) => {
+      if (!c.shapeId) {
+        loose.push(c)
+        return
+      }
+      const arr = comments.get(c.shapeId) ?? []
+      arr.push(c)
+      comments.set(c.shapeId, arr)
+    })
+  })
+  return { links: pptxLinkTargets(slide.rels), comments, used: new Set<string>(), loose }
+}
+
 /**
  * PPTX → 文本。
  * 一页一个块：`[幻灯片 N]` + 形状文字 + 表格（Markdown 管道表）+ 图片 alt，
+ * 行尾带超链接 `[链接: …]` 与批注 `[批注(作者): …]`，
  * 末尾挂这一页的演讲者备注 `[备注] …`。
  */
 export function extractPptxText(filePath: string): string {
   const parts = readPptxParts(filePath)
   const blocks: string[] = []
   pptxSlideOrder(parts).forEach((slide, i) => {
-    const lines = [`[幻灯片 ${i + 1}]`, ...pptxSlideBlocks(slide.xml)]
+    const ctx = pptxRenderCtx(parts, slide)
+    const lines = [`[幻灯片 ${i + 1}]`, ...pptxSlideBlocks(slide.xml, ctx)]
+    // 挂不到形状上的批注 → 该页末尾（备注仍在最后）
+    const orphans: PptxComment[] = ctx.loose.slice()
+    ctx.comments.forEach((cs, id) => {
+      if (!ctx.used.has(id)) orphans.push(...cs)
+    })
+    for (const c of orphans) lines.push(`[批注(${c.author}): ${c.text}]`)
     const notesPath = relTargetByType(slide.rels, '/notesSlide', 'ppt/slides')
     const notes = pptxNotesText(notesPath ? (parts.notes[notesPath] ?? '') : '')
     if (notes) lines.push(`[备注] ${notes}`)

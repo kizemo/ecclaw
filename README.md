@@ -1583,6 +1583,38 @@ XLSX 单元格只剩算好的值（`SUM(B1:B9)` 变成 `30`），agent 不知道
 
 ---
 
+### 5.43 PPTX 超链接 + PPTX 批注（点向哪里 + 谁说了什么）
+
+第三十九阶段。§5.41 把**链接目标**与**审阅意见**补给了 DOCX / XLSX，PPTX 却成了三种格式里
+**唯一的一致性缺口**：幻灯片上的 `a:hlinkClick` 链接点向哪里不可知，
+`ppt/comments/*.xml` 里的演讲者批注**整条不读** —— agent 看到的只是一张没有出处的图。
+本轮把两者补齐，PPTX / DOCX / XLSX 三格式在「链接 + 批注」上口径一致。
+
+- **PPTX 超链接**：slide rels 里 Type 以 `/hyperlink` 结尾的关系 → `rId` → Target，
+  页面里 `a:hlinkClick` 的 `r:id` 查表 → `[链接: <目标>]`。
+  **只有带协议的外部目标才输出**；内部跳转（`ppaction://hlinksldjump`、
+  Target 指向本页或其它 slide）**不输出** —— 那是导航不是链接。
+- **PPTX 批注**：slide rels 里 Type 以 `/comments` 结尾的关系 → 部件
+  （旧的 `ppt/comments/comment1.xml` / 新的 `ppt/comments/modernComment_*.xml`），
+  **两代格式都认**：旧的 `p:cm`、新的 `p188:cm`；正文旧的在 `p:text`、
+  新格式在 `p188:txBody` 里的 `a:t`。
+  作者按 `authorId` 到 `ppt/commentAuthors.xml` / `ppt/authors.xml` 查
+  （作者标签 `p:cmAuthor` / `p188:author` 两种写法都认），
+  **查不到就留空**（输出 `[批注(): 正文]`），**只出作者不出日期**。
+- **落位与顺序**：run / 段落级链接 → 该段落行末；形状级链接 → 该形状**首个块**末尾
+  （图片形状挂在 `[图片: alt]` 那行）；批注 → 被评论形状的首行末
+  （按 `p:cm@idx` 匹配形状 `p:cNvPr@id`）。
+  顺序恒为 **文本 → 链接 → 批注**。
+- **挂不到形状的批注** → 该页末尾单列一行；**演讲者备注仍在最后一行**（既有输出前缀逐字不变）。
+- **表格不挂形状级标记** —— `p:graphicFrame` 的 Markdown 管道表被追加标记会破坏表结构。
+
+**范围**：只改 `electron/main/document-preview.ts`；契约 / `host-bridge.ts` / `host-server.mjs` /
+`src/App.tsx` 不动。
+
+**工具数不变**：仍是 **27**；**无新增依赖**；无链接无批注的 PPTX **输出逐字不变**。
+
+---
+
 ## 6. 技能与文件库
 
 - **技能**：`<stateDir>/skills`（托管）与 `<stateDir>/user-skills`（用户自建），
@@ -1720,7 +1752,19 @@ DOCX `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` → 段落末尾 `[�
 删除内容靠标记找回（正文流不动，插入文本不重复渲染），
 段落标记修订（`pPr/rPr/ins` 空壳）不产生标记；
 标记顺序 XLSX 值 → 公式 → 链接/批注 → 颜色最末，DOCX 文本 → 修订 → 链接 → 批注；
-工具数仍 27，见 §5.42）。
+工具数仍 27，见 §5.42）、
+**PPTX 超链接 + PPTX 批注**（补齐 §5.41 留下的三格式一致性缺口：
+slide rels 里 Type 以 `/hyperlink` 结尾的关系 → `rId` → Target，
+`a:hlinkClick` 按 `r:id` 查表；**只有带协议的外部目标才输出**，
+内部跳转（`ppaction://hlinksldjump` / 指向其它 slide）不输出；
+批注部件走 Type 以 `/comments` 结尾的关系（旧的 `comment1.xml` / 新的 `modernComment_*.xml`），
+**两代格式都认**（`p:cm` / `p188:cm`），作者从 `ppt/commentAuthors.xml` / `ppt/authors.xml`
+按 `authorId` 查、**查不到留空**、只出作者不出日期；
+run/段落级链接挂该段落行末、形状级链接挂该形状首个块末尾（图片挂 `[图片: alt]` 行）、
+批注按 `p:cm@idx` 匹配形状 `p:cNvPr@id` 挂被评论形状首行末、
+**挂不到形状的批注落该页末尾且备注仍在最后一行**；
+顺序恒为 文本 → 链接 → 批注；**表格不挂形状级标记**（会破坏 Markdown 表）；
+工具数仍 27，见 §5.43）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，
