@@ -688,10 +688,12 @@ function docxHeaderLines(xml: string): string[] {
 /** DOCX 的结构容器标签：只有这四种标签的嵌套会影响「直接子级」判定 */
 const DOCX_CONTAINER_TAGS = 'w:tbl|w:tr|w:tc|w:p'
 
-/** DOCX 结构元素（只取结构容器，w:r / w:t 等叶子不建节点） */
-interface DocxElement {
+/** XML 结构元素（只取结构容器，w:r / w:t / a:r 等叶子不建节点） */
+interface XmlElement {
   /** 标签名，如 w:tbl */
   tag: string
+  /** 开始标签原文（如 `<a:tc gridSpan="2">`），属性要靠它读 */
+  open: string
   /** 内部 XML */
   body: string
 }
@@ -701,14 +703,15 @@ interface DocxElement {
  *
  * 为什么不能用非贪婪正则：`<w:tc>…</w:tc>` 会在**内层**单元格的 `</w:tc>` 提前收尾，
  * 表格一旦嵌套，外层的行列位就全错。这里按容器标签做栈式配对，同名嵌套不会打断匹配。
- * 只跟踪 w:tbl / w:tr / w:tc / w:p 四种容器，其余标签（w:r / w:t / w:sdt …）不参与层级判定。
+ * 只跟踪 containerTags 里的容器标签，其余标签（w:r / w:t / w:sdt …）不参与层级判定。
  */
-function docxChildElements(content: string, wanted: string[]): DocxElement[] {
+function xmlChildElements(content: string, containerTags: string, wanted: string[]): XmlElement[] {
   const want = new Set(wanted)
-  const out: DocxElement[] = []
-  const tokenRe = new RegExp(`<(/?)(${DOCX_CONTAINER_TAGS})(?:\\s[^>]*?)?(/?)>`, 'g')
+  const out: XmlElement[] = []
+  const tokenRe = new RegExp(`<(/?)(${containerTags})(?:\\s[^>]*?)?(/?)>`, 'g')
   const stack: string[] = []
   let curTag = ''
+  let curOpen = ''
   let curStart = 0
   let m: RegExpExecArray | null
   while ((m = tokenRe.exec(content)) !== null) {
@@ -720,19 +723,21 @@ function docxChildElements(content: string, wanted: string[]): DocxElement[] {
       if (stack.length > 0 && stack[stack.length - 1] === tag) {
         const popped = stack.pop() as string
         if (stack.length === 0 && popped === curTag) {
-          out.push({ tag: popped, body: content.slice(curStart, m.index) })
+          out.push({ tag: popped, open: curOpen, body: content.slice(curStart, m.index) })
           curTag = ''
+          curOpen = ''
         }
       }
       continue
     }
     if (selfClosing) {
       // 自闭合（如 <w:p/>）没有内容，按空子元素记
-      if (stack.length === 0 && want.has(tag)) out.push({ tag, body: '' })
+      if (stack.length === 0 && want.has(tag)) out.push({ tag, open: m[0], body: '' })
       continue
     }
     if (stack.length === 0 && want.has(tag)) {
       curTag = tag
+      curOpen = m[0]
       curStart = m.index + m[0].length
     }
     stack.push(tag)
@@ -740,12 +745,17 @@ function docxChildElements(content: string, wanted: string[]): DocxElement[] {
   return out
 }
 
+/** DOCX 版的「直接子级」提取（容器标签固定为 DOCX_CONTAINER_TAGS） */
+function docxChildElements(content: string, wanted: string[]): XmlElement[] {
+  return xmlChildElements(content, DOCX_CONTAINER_TAGS, wanted)
+}
+
 /**
  * 表格单元格 → 文本
  * - 自身段落：多段用空格连接（沿用既有口径）；
  * - 内嵌表格：每行占一行，行内各列用 ` | ` 连接（渲染时转义成 `\|`，仍落在同一个外层格子里）。
  */
-function docxCellText(cell: DocxElement, ctx: DocxRenderCtx): string {
+function docxCellText(cell: XmlElement, ctx: DocxRenderCtx): string {
   const lines: string[] = []
   const own: string[] = []
   const flush = (): void => {
@@ -779,7 +789,7 @@ function markdownCell(text: string): string {
 const MAX_GRID_SPAN = 32
 
 /** 单元格自身的横向跨度：只认紧跟在 <w:tc> 后的 tcPr，嵌套表格的 tcPr 不参与 */
-function docxCellSpan(cell: DocxElement): number {
+function docxCellSpan(cell: XmlElement): number {
   const props = cell.body.match(/^\s*(<w:tcPr(?:\s[^>]*)?>[\s\S]*?<\/w:tcPr>)/)?.[1] ?? ''
   const raw = Number(props.match(/<w:gridSpan\b[^>]*?\bw:val="(\d+)"/)?.[1] ?? 1)
   if (!Number.isFinite(raw) || raw < 1) return 1
@@ -959,14 +969,169 @@ function pptxParagraphText(paragraph: string): string {
   return out.join('')
 }
 
-/** PPTX 一页（slideN.xml）里的文字：每段一行 */
-function pptxSlideText(xml: string): string {
+/* ---------------------- PPTX 结构：表格 / 备注 / 图片 alt ---------------------- */
+
+/**
+ * PPTX 里影响「直接子级」判别的容器标签。
+ * 注意**不含 p:sld**：它是最外层包装，不跟踪它，扫描时 <p:cSld> 才落在深度 0。
+ */
+const PPTX_CONTAINER_TAGS =
+  'p:cSld|p:spTree|p:sp|p:pic|p:graphicFrame|p:grpSp|p:txBody|a:txBody|a:tbl|a:tr|a:tc|a:p'
+
+/** 幻灯片自己的 rels（用来找 notesSlide） */
+const PPTX_SLIDE_RELS_RE = /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/
+/** 备注页 */
+const PPTX_NOTES_RE = /^ppt\/notesSlides\/notesSlide\d+\.xml$/
+
+/** 只是占位的形状类型：页码 / 日期 / 页眉页脚（抽出来是噪音，不是内容） */
+const PPTX_SKIP_PLACEHOLDERS = new Set(['sldNum', 'dt', 'hdrFtr', 'ftr'])
+
+/** PPTX 部件：幻灯片 + 每页的 rels + 备注页 */
+interface PptxParts {
+  presentation: string
+  presentationRels: string
+  slides: Array<{ name: string; xml: string; rels: string }>
+  notes: Record<string, string>
+}
+
+/** 形状（p:sp）里的文字：每个段落一行 */
+function pptxShapeLines(shapeXml: string): string[] {
   const lines: string[] = []
-  for (const m of xml.matchAll(/<a:p(?:\s[^>]*)?>[\s\S]*?<\/a:p>/g)) {
-    const text = pptxParagraphText(m[0]).trim()
-    if (text) lines.push(text)
+  for (const body of xmlChildElements(shapeXml, PPTX_CONTAINER_TAGS, ['p:txBody'])) {
+    for (const para of xmlChildElements(body.body, PPTX_CONTAINER_TAGS, ['a:p'])) {
+      const text = pptxParagraphText(para.body).trim()
+      if (text) lines.push(text)
+    }
   }
-  return lines.join('\n')
+  return lines
+}
+
+/** 形状的占位符类型（p:ph@type；没有 p:ph 就是普通文本框） */
+function pptxPlaceholderType(shapeXml: string): string {
+  return /<p:ph\b[^>]*?\btype="([^"]*)"/.exec(shapeXml)?.[1] ?? ''
+}
+
+/** 图片替代文字（alt）：p:pic 的 cNvPr@descr；没有 descr 就不出噪音行 */
+function pptxPictureAlt(picXml: string): string {
+  const nv = /<p:nvPicPr(?:\s[^>]*)?>[\s\S]*?<\/p:nvPicPr>/.exec(picXml)?.[0] ?? picXml
+  const descr = /\bdescr="([^"]*)"/.exec(nv)?.[1] ?? ''
+  return decodeXmlEntities(descr).trim()
+}
+
+/** 表格单元格文本：多段用空格连接（沿用 DOCX 口径） */
+function pptxCellText(cellXml: string): string {
+  const parts: string[] = []
+  for (const body of xmlChildElements(cellXml, PPTX_CONTAINER_TAGS, ['a:txBody'])) {
+    for (const para of xmlChildElements(body.body, PPTX_CONTAINER_TAGS, ['a:p'])) {
+      const text = pptxParagraphText(para.body).trim()
+      if (text) parts.push(text)
+    }
+  }
+  return parts.join(' ')
+}
+
+/** 单元格横向跨几列（DrawingML 的 gridSpan 是 a:tc 自己的属性） */
+function pptxCellGridSpan(cell: XmlElement): number {
+  const raw = Number(/\bgridSpan="(\d+)"/.exec(cell.open)?.[1] ?? 1)
+  if (!Number.isFinite(raw) || raw < 1) return 1
+  return Math.min(Math.floor(raw), MAX_GRID_SPAN)
+}
+
+/**
+ * PPTX 表格 → Markdown 管道表（首行作表头，缺的列补空）
+ *
+ * 合并单元格口径与 DOCX 一致：
+ * - 横向 `gridSpan="N"`：内容只放首格，其余 N-1 格补空，后续列位因此与其它行对齐；
+ * - 纵向 `rowSpan` / `hMerge` / `vMerge`：内容留在起始格，续格本身没有内容 → 输出空格。
+ */
+function pptxTableMarkdown(frameXml: string): string {
+  const tbl = xmlChildElements(frameXml, PPTX_CONTAINER_TAGS, ['a:tbl'])[0]
+  if (!tbl) return ''
+  const rows: string[][] = []
+  for (const tr of xmlChildElements(tbl.body, PPTX_CONTAINER_TAGS, ['a:tr'])) {
+    const cells: string[] = []
+    for (const tc of xmlChildElements(tr.body, PPTX_CONTAINER_TAGS, ['a:tc'])) {
+      const span = pptxCellGridSpan(tc)
+      cells.push(markdownCell(pptxCellText(tc.body)))
+      for (let i = 1; i < span; i++) cells.push('')
+    }
+    if (cells.length > 0) rows.push(cells)
+  }
+  if (rows.length === 0) return ''
+  const cols = Math.max(...rows.map((r) => r.length))
+  const line = (cells: string[]): string => {
+    const padded = [...cells]
+    while (padded.length < cols) padded.push('')
+    return `| ${padded.join(' | ')} |`
+  }
+  const out = [line(rows[0]), `| ${Array(cols).fill('---').join(' | ')} |`]
+  for (const row of rows.slice(1)) out.push(line(row))
+  return out.join('\n')
+}
+
+/** 取 spTree 的内容（幻灯片 / 备注页 / 组合形状都有一层 spTree） */
+function pptxSpTreeBody(xml: string): string {
+  const cSld = xmlChildElements(xml, PPTX_CONTAINER_TAGS, ['p:cSld'])[0]
+  const tree = cSld ? xmlChildElements(cSld.body, PPTX_CONTAINER_TAGS, ['p:spTree'])[0] : undefined
+  return tree?.body ?? ''
+}
+
+/** 演讲者备注：优先 body 占位符；页码 / 日期 / 页眉页脚占位符跳过 */
+function pptxNotesText(notesXml: string): string {
+  if (!notesXml) return ''
+  const bodyLines: string[] = []
+  const otherLines: string[] = []
+  for (const sp of xmlChildElements(pptxSpTreeBody(notesXml), PPTX_CONTAINER_TAGS, ['p:sp'])) {
+    const type = pptxPlaceholderType(sp.body)
+    if (PPTX_SKIP_PLACEHOLDERS.has(type)) continue
+    const lines = pptxShapeLines(sp.body)
+    if (lines.length === 0) continue
+    if (type === 'body') bodyLines.push(...lines)
+    else otherLines.push(...lines)
+  }
+  return (bodyLines.length > 0 ? bodyLines : otherLines).join(' ')
+}
+
+/** 一页 spTree 里的内容块：形状文字 / 表格 / 图片 alt，按形状在页面里的先后顺序 */
+function pptxTreeBlocks(treeXml: string): string[] {
+  const blocks: string[] = []
+  for (const child of xmlChildElements(treeXml, PPTX_CONTAINER_TAGS, [
+    'p:sp',
+    'p:pic',
+    'p:graphicFrame',
+    'p:grpSp'
+  ])) {
+    if (child.tag === 'p:sp') {
+      if (PPTX_SKIP_PLACEHOLDERS.has(pptxPlaceholderType(child.body))) continue
+      blocks.push(...pptxShapeLines(child.body))
+    } else if (child.tag === 'p:grpSp') {
+      const tree = xmlChildElements(child.body, PPTX_CONTAINER_TAGS, ['p:spTree'])[0]
+      if (tree) blocks.push(...pptxTreeBlocks(tree.body))
+    } else if (child.tag === 'p:graphicFrame') {
+      const table = pptxTableMarkdown(child.body)
+      if (table) blocks.push(table)
+    } else {
+      const alt = pptxPictureAlt(child.body)
+      if (alt) blocks.push(`[图片: ${alt}]`)
+    }
+  }
+  return blocks
+}
+
+/** 一页（slideN.xml）里的内容块 */
+function pptxSlideBlocks(slideXml: string): string[] {
+  return pptxTreeBlocks(pptxSpTreeBody(slideXml))
+}
+
+/** rels 里按关系类型找目标路径（Type 以 typeSuffix 结尾） */
+function relTargetByType(relsXml: string, typeSuffix: string, baseDir: string): string {
+  for (const m of relsXml.matchAll(/<Relationship\s[^>]*\/>/g)) {
+    const type = /\bType="([^"]*)"/.exec(m[0])?.[1] ?? ''
+    if (!type.endsWith(typeSuffix)) continue
+    const target = /\bTarget="([^"]*)"/.exec(m[0])?.[1]
+    if (target) return resolveRelTarget(baseDir, target)
+  }
+  return ''
 }
 
 /** slideN.xml 的序号（用于兜底排序） */
@@ -974,26 +1139,49 @@ function slideNo(name: string): number {
   return Number(/slide(\d+)\.xml$/.exec(name)?.[1] ?? 0)
 }
 
+/** 解出 PPTX 要用的部件（幻灯片 + 幻灯片 rels + 备注页） */
+function readPptxParts(filePath: string): PptxParts {
+  const files = readZipEntries(
+    filePath,
+    (n) =>
+      n === PPTX_PRESENTATION_ENTRY ||
+      n === PPTX_PRESENTATION_RELS ||
+      PPTX_SLIDE_RE.test(n) ||
+      PPTX_SLIDE_RELS_RE.test(n) ||
+      PPTX_NOTES_RE.test(n)
+  )
+  const dec = (u: Uint8Array | undefined): string =>
+    u ? new TextDecoder('utf-8').decode(u) : ''
+  const names = Object.keys(files)
+  const slideNames = names.filter((n) => PPTX_SLIDE_RE.test(n))
+  if (slideNames.length === 0) throw new Error('没有找到幻灯片（ppt/slides/*.xml）')
+  const notes: Record<string, string> = {}
+  for (const n of names.filter((n) => PPTX_NOTES_RE.test(n))) notes[n] = dec(files[n])
+  const slides = slideNames
+    .sort((a, b) => slideNo(a) - slideNo(b))
+    .map((name) => ({
+      name,
+      xml: dec(files[name]),
+      rels: dec(files[`ppt/slides/_rels/${path.basename(name)}.rels`])
+    }))
+  return {
+    presentation: dec(files[PPTX_PRESENTATION_ENTRY]),
+    presentationRels: dec(files[PPTX_PRESENTATION_RELS]),
+    slides,
+    notes
+  }
+}
+
 /**
- * PPTX → 纯文本。
- * 顺序优先按 `ppt/presentation.xml` 的 sldIdLst（那是真实放映顺序），
+ * 放映顺序：优先按 `ppt/presentation.xml` 的 sldIdLst（那是真实放映顺序），
  * 读不到再退回按 slideN.xml 的编号排。
  */
-export function extractPptxText(filePath: string): string {
-  const entries = readZipEntries(
-    filePath,
-    (n) => n === PPTX_PRESENTATION_ENTRY || n === PPTX_PRESENTATION_RELS || PPTX_SLIDE_RE.test(n)
-  )
-  const slideNames = Object.keys(entries).filter((n) => PPTX_SLIDE_RE.test(n))
-  if (slideNames.length === 0) throw new Error('没有找到幻灯片（ppt/slides/*.xml）')
-
-  let ordered = slideNames.slice().sort((a, b) => slideNo(a) - slideNo(b))
-  const pres = decodeEntry(entries[PPTX_PRESENTATION_ENTRY])
-  const relsXml = decodeEntry(entries[PPTX_PRESENTATION_RELS])
-  if (pres && relsXml) {
-    const rels = parseRels(relsXml)
+function pptxSlideOrder(parts: PptxParts): PptxParts['slides'] {
+  const byName = new Map(parts.slides.map((s) => [s.name, s]))
+  if (parts.presentation && parts.presentationRels) {
+    const rels = parseRels(parts.presentationRels)
     const ids: string[] = []
-    for (const m of pres.matchAll(/<p:sldId\s[^>]*\/>/g)) {
+    for (const m of parts.presentation.matchAll(/<p:sldId\s[^>]*\/>/g)) {
       const rid = /\br:id="([^"]*)"/.exec(m[0])?.[1]
       if (rid) ids.push(rid)
     }
@@ -1001,12 +1189,27 @@ export function extractPptxText(filePath: string): string {
       .map((id) => rels.get(id))
       .filter((t): t is string => !!t)
       .map((t) => resolveRelTarget('ppt', t))
-    if (targets.length > 0 && targets.every((t) => slideNames.includes(t))) ordered = targets
+    if (targets.length > 0 && targets.every((t) => byName.has(t))) {
+      return targets.map((t) => byName.get(t) as PptxParts['slides'][number])
+    }
   }
+  return parts.slides
+}
 
+/**
+ * PPTX → 文本。
+ * 一页一个块：`[幻灯片 N]` + 形状文字 + 表格（Markdown 管道表）+ 图片 alt，
+ * 末尾挂这一页的演讲者备注 `[备注] …`。
+ */
+export function extractPptxText(filePath: string): string {
+  const parts = readPptxParts(filePath)
   const blocks: string[] = []
-  ordered.forEach((name, i) => {
-    blocks.push(`[幻灯片 ${i + 1}]\n${pptxSlideText(decodeEntry(entries[name]))}`)
+  pptxSlideOrder(parts).forEach((slide, i) => {
+    const lines = [`[幻灯片 ${i + 1}]`, ...pptxSlideBlocks(slide.xml)]
+    const notesPath = relTargetByType(slide.rels, '/notesSlide', 'ppt/slides')
+    const notes = pptxNotesText(notesPath ? (parts.notes[notesPath] ?? '') : '')
+    if (notes) lines.push(`[备注] ${notes}`)
+    blocks.push(lines.join('\n'))
   })
   return normalizeText(blocks.join('\n\n'))
 }

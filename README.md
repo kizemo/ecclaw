@@ -1500,6 +1500,30 @@ phase4d 自测 / e2e 的两条期望值已同步更新，README §5.33 一并注
 
 ---
 
+### 5.40 PPTX 结构保真（表格列关系 / 演讲者备注 / 图片 alt）
+
+第三十六阶段。§5.27 起 PPTX 只能抽出**每页每段一行**的扁平纯文本 ——
+表格被摊平成一堆独立行（**列关系全丢**）、演讲者备注整页丢失、图片 alt 丢失。
+本轮把 PPTX 的**结构信息**补回来，表格走 Markdown 管道表（与 DOCX 表格风格一致）。
+
+- **表格 → Markdown 管道表**：`p:graphicFrame` 里的 `a:tbl` 按 `a:tr` / `a:tc` 取出，
+  首行作表头 + `| --- |` 分隔行，**缺列补空**（复用既有 `markdownCell()`）。
+- **合并单元格口径与 DOCX 一致**：横向 `gridSpan="N"` → 内容只放首格、其余 N−1 格补空
+  （后续列位因此与其它行对齐）；纵向 `rowSpan` / `hMerge` / `vMerge` → 内容留在起始格、续格补空。
+- **演讲者备注**：按幻灯片自己的 `ppt/slides/_rels/slideN.xml.rels` 找 `notesSlide`，
+  取**正文占位符**（`p:ph@type="body"`）的多段文字，落在**该页正文末尾** `[备注] …`。
+- **图片 alt**：`p:pic` 的 `p:nvPicPr` 里 `cNvPr@descr` → `[图片: 营收趋势折线图]`；
+  **没有 descr 的图片不产生噪音行**。
+- **占位符降噪**：`sldNum` / `dt` / `hdrFtr` / `ftr` 四类占位形状**整页跳过** ——
+  否则页码域文字（`<a:fld><a:t>2</a:t>`）会混进正文变成孤立的一行「2」。
+
+**范围**：只改 `electron/main/document-preview.ts`；契约 / `host-bridge.ts` / `host-server.mjs` /
+`src/App.tsx` 不动。
+
+**工具数不变**：仍是 **27**；**无新增依赖**。
+
+---
+
 ## 6. 技能与文件库
 
 - **技能**：`<stateDir>/skills`（托管）与 `<stateDir>/user-skills`（用户自建），
@@ -1616,7 +1640,13 @@ duplicateValues / uniqueValues；判定前先按范围算命中集合，逐格�
 按 `lvlText` 真实渲染（decimal / 字母 / 罗马 / 中文数字，每级 2 空格缩进）、
 run 级粗斜体转 `**` / `*` 标记（单元格内同样应用）、
 页眉页脚脚注分别以 `[页眉]` / `[页脚]` / `[脚注]` 落位、正文脚注引用内联 `[N]`；
-工具数仍 27，见 §5.39）。
+工具数仍 27，见 §5.39）、
+**PPTX 结构保真**（`p:graphicFrame` 里的 `a:tbl` → Markdown 管道表（首行表头 + 分隔行、缺列补空）；
+合并单元格沿用 DOCX 口径（`gridSpan` 首格放内容其余补空、`rowSpan` / `hMerge` / `vMerge` 续格留空）；
+演讲者备注按 slide 的 rels 找 `notesSlide` 取 body 占位符、落在页内末尾 `[备注] …`；
+图片 alt 取 `p:nvPicPr` 的 `cNvPr@descr` → `[图片: …]`（无 descr 不出噪音行）；
+`p:ph@type` 为 `sldNum` / `dt` / `hdrFtr` / `ftr` 的占位形状整页跳过，页码域文字不混进正文；
+工具数仍 27，见 §5.40）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

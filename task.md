@@ -198,6 +198,17 @@
 > 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
 > 秒级自测 **30/30**；e2e **39/39**；✅ **全量回归 run68 二十二套 720/720 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4j-final-2026-11-06.md`。
+> **第三十六阶段（PPTX 结构保真 · 表格列关系 / 演讲者备注 / 图片 alt）已完成并真机验证（`phase4k-e2e.cjs` **35/35** 全绿）**：
+> §5.27 起 PPTX 只能抽出**每页每段一行**的扁平纯文本（表格列关系、演讲者备注、图片 alt 全丢），本轮把结构补回来：
+> **表格**走 Markdown 管道表（`p:graphicFrame` → `a:tbl`，首行作表头 + `| --- |` 分隔行，缺列补空，复用 `markdownCell()`）；
+> **合并单元格口径与 DOCX 一致**（横向 `gridSpan="N"` 首格放内容其余 N−1 格补空；纵向 `rowSpan` / `hMerge` / `vMerge`
+> 内容留起始格、续格补空）；**演讲者备注**按幻灯片自己的 `ppt/slides/_rels/slideN.xml.rels` 找 `notesSlide`，
+> 取 body 占位符多段文字，落在**该页正文末尾** `[备注] …`；**图片 alt** 取 `p:nvPicPr` 的 `cNvPr@descr` →
+> `[图片: 营收趋势折线图]`（**没有 descr 的图片不产生噪音行**）；**占位符降噪** —— `p:ph@type` 为
+> `sldNum` / `dt` / `hdrFtr` / `ftr` 的形状整页跳过（否则页码域文字 `<a:fld><a:t>2</a:t>` 会混进正文变成孤立一行「2」）。
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **27/27**；e2e **35/35**；✅ **全量回归 run69 二十三套 755/755 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4k-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -365,6 +376,38 @@
    逐 run 语义正确（`**` / `*` / `***`），但**整行**看是 4 星号，断言按**实际输出**写，别按直觉写。
 8. **上下文 160K 硬闸门仍会拦 Bash**：上一会话在 164K 时被拦（只放行 Write/Edit）→ 被迫落 WIP handoff。
    教训不变：写代码前估「还要读多少」，长文件读一次后只引用路径。
+
+## 第三十六阶段（2026-11-06）：PPTX 结构保真（表格列关系 / 演讲者备注 / 图片 alt） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 承接 phase4j handoff §4 候选 1（PPTX 表格 + 备注，探针已实测确认），**不重做探针**；`expression` 条件格式留作下一轮候选（价值中） |
+| 2 | 扫描器通用化 | ✅ | 把 `docxChildElements` 抽成 `xmlChildElements(content, containerTags, wanted)`，**多存 `open` 字段**（开始标签原文 —— `gridSpan` 是 `a:tc` 自己的属性，只能从开始标签读）；DOCX 版仍走原容器标签，**行为逐字不变**（phase4j selftest 30/30 复验通过） |
+| 3 | PPTX 表格 → Markdown | ✅ | `p:graphicFrame` → `a:tbl` → `a:tr` / `a:tc`；首行作表头 + `\| --- \|` 分隔行，**缺列补空**（复用 `markdownCell()`）；`pptxTableMarkdown()` |
+| 4 | 合并单元格（与 DOCX 同口径） | ✅ | 横向 `gridSpan="N"` → 内容只放首格、其余 N−1 格补空（后续列位与其它行对齐）；纵向 `rowSpan` / `hMerge` / `vMerge` → 内容留起始格、续格补空；`gridSpan` 上限复用 `MAX_GRID_SPAN` = 32 |
+| 5 | 演讲者备注 | ✅ | 按幻灯片自己的 `ppt/slides/_rels/slideN.xml.rels` 找 `notesSlide`（`relTargetByType()` 按 `Type` 结尾匹配 + `resolveRelTarget()` 拼路径，**不按编号猜**）；取 **body 占位符**多段文字（空格连接），落在**页内末尾** `[备注] …`；`pptxNotesText()` |
+| 6 | 图片 alt | ✅ | `p:pic` 的 `p:nvPicPr` 里 `cNvPr@descr` → `[图片: 营收趋势折线图]`；**没有 descr 的图片不产生噪音行**；`pptxPictureAlt()` |
+| 7 | 占位符降噪 | ✅ | `p:ph@type` 为 `sldNum` / `dt` / `hdrFtr` / `ftr` 的形状**整页跳过** → 页码域文字（`<a:fld><a:t>2</a:t>`）不混进正文；组合形状 `p:grpSp` 递归展开，`p:sp` 靠 `p:grpSp` 被跟踪才不会误判为直接子级 |
+| 8 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` **全不动** → **MCP 工具数仍 27**、仍无必填参数；**无新增依赖**；界面沿用 `PPTX · 文本预览` 标签 |
+| 9 | e2e + 回归 | ✅ | `phase4k-selftest.cjs` **27/27**（16 行整行相等 + 行数 + kind + error + 8 条负向断言）；`phase4k-e2e.cjs` **35/35**（工具面 3 · 抽取 19 · 负向 8 · 界面 5；产物 `run69-phase4k.log`）；**全量回归 run69 二十三套 755/755 全绿**（4k 35 · 4j 39 · 4i 53 · 4h 48 · 4g 30 · 4f 26 · 4e 21 · 4d 31 · 4c 26 · 4b 18 · 4a 20 · 3z 37 · 3y 31 · 3x 41 · 3w 27 · 3v 29 · 3u 24 · 3t 16 · 3r 31 · 3p 45 · 3o 44 · 3m 69 · sse 14，FAIL 全 0；摘要 `run69-summary.txt`）。未跑真站 phase3s/3q |
+
+第三十六阶段实证发现：
+
+1. **容器标签表里多一个 `p:sld` 就全灭**：`p:sld` 是最外层包装，跟踪它会让 `<p:cSld>` 落在**深度 1**
+   → `xmlChildElements` 只在「栈空」时收节点，直接子级扫描直接空数组（**不报错、只是全空**，最难查）。
+2. **单元格文字体是 `a:txBody`（不是 `p:txBody`）** → 容器标签表必须**同时**含 `p:txBody` 与 `a:txBody`，
+   否则表格全空而形状文字正常（症状分裂，容易误判成「表格没抽到」而不是「标签写错」）。
+3. **属性只能从开始标签读**：`gridSpan` 挂在 `<a:tc gridSpan="2">` 上，**不在 body 里**；
+   把 `XmlElement` 加一个 `open` 字段存开始标签原文，比在 body 里正则瞎找靠谱。
+4. **备注要按 slide 自己的 rels 找**：`notesSlide` 的编号与 slide 编号**不一定对得上**（可能有多张 notesSlide、
+   可能缺）→ 只能按 rels 里的 `Type` 结尾匹配 + `resolveRelTarget()` 拼相对路径。
+5. **占位符不降噪就会漏出页码**：`<a:fld><a:t>2</a:t>` 是**域代码**不是正文，
+   不跳过就会在正文里多出一行孤零零的「2」（看着像页码污染，其实是形状类型没过滤）。
+6. **通用化扫描器是复利**：`docxChildElements` → `xmlChildElements` 只多一个参数，
+   DOCX 行为逐字不变（selftest 30/30 复验），PPTX 直接复用 —— **不要为第二个格式复制一份扫描器**。
+7. **调试断点要靠复刻扫描器定位**：`dbg-4k.cjs` 复刻一份 `xmlChildElements` 逐步打印
+   「cSld 找到几个 / spTree 找到几个 / 子形状标签列表」，**比在产品代码里插日志快**（且不污染工作区）。
+8. **NFKC 归一化会改中文全角标点**：期望值里的「，」「。」在输出里是「,」「.」→ 断言按**实际输出**写。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 
