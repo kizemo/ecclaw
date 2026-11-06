@@ -42,7 +42,7 @@
 
 ## 4. 环境 / 复跑命令
 
-- 项目根 `F:\soft\00selfmade\ecclaw`；本轮功能提交 = `__FEAT_HASH__`
+- 项目根 `F:\soft\00selfmade\ecclaw`；本轮功能提交 = `701d6d0`
 - tsout 编译（**必须在项目根跑**）：
   ```
   cd F:/soft/00selfmade/ecclaw && npx tsc electron/main/document-preview.ts --module commonjs \
