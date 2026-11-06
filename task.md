@@ -258,6 +258,20 @@
 > 秒级自测 **74/74**（先 RED 58/74）；交叉复验 phase4m **72/72** / phase4l **41/41** / phase4j **30/30** / phase4k（输出逐字不变）；
 > e2e **78/78**；✅ **全量回归 run72 二十六套 920/920 全绿**（FAIL 全 0，未跑真站 phase3s/3q）。
 > 交接见 `handoff-ecclaw-phase4n-final-2026-11-06.md`。
+> **第四十阶段（三格式文档属性 · 谁写的、什么时候改的）已完成并真机验证（`phase4o-e2e.cjs` **17/17** 全绿）**：
+> DOCX / XLSX / PPTX 都把标题、作者、最后修改人、修改时间写在同一个部件 `docProps/core.xml`，
+> 抽取器此前**完全不读**，agent 拿到的是没有出处的正文、同名文件也无法区分。本轮用一个解析函数补齐三格式：
+> `parseCoreProps()` **按本地名匹配**（不硬编码 `dc:` / `cp:` / `dcterms:` 前缀，前缀可任意绑定），
+> 取 `title` / `creator` / `lastModifiedBy` / `modified` → 置顶一行
+> `[文档信息] 标题: … · 作者: … · 修改人: … · 修改时间: …`；
+> **空字段逐个省略，四个全空或无该部件一行不出**；DOCX 在页眉前、PPTX 在 `[幻灯片 1]` 前、XLSX 在 `[工作表 …]` 前，
+> PPTX / XLSX 元数据与正文**紧邻不额外插空行**；畸形 `core.xml` 不抛异常不出半截，无 `docProps` 的文件输出逐字不变；
+> 只改 `electron/main/document-preview.ts` 一个文件；MCP 工具数仍 **27**，无新增依赖；
+> 秒级自测 **17/17**；交叉复验 phase4n **74/74** / phase4m **72/72** / phase4l **41/41** / phase4j **30/30** / phase4k **27/27**；
+> e2e **17/17**；全量回归 run73 二十七套 **936 PASS / 1 FAIL** —— 唯一失败是 phase3r 的 C3，
+> 根因为**事件库已超 2000 条而回放硬上限 2000**（`host-events.ts:409`）导致参照样本被截断，
+> 与本轮改动无关（本轮只动 `document-preview.ts`）；其余二十六套全绿（未跑真站 phase3s/3q）。
+> 交接见 `handoff-ecclaw-phase4o-final-2026-11-06.md`。
 > 交接见 `handoff-ecclaw-phase3s-final-2026-11-03.md`（第十八阶段收官）、`handoff-ecclaw-phase3s-2026-11-03.md`（第十八阶段进行中）、
 > 交接见 `handoff-ecclaw-phase3r-final-2026-11-03.md`（第十七阶段收官）、
 > 交接见 `handoff-ecclaw-phase3q-final-2026-11-03.md`（第十六阶段收官）、`handoff-ecclaw-phase3q-2026-11-03.md`（第十六阶段实施细节）、
@@ -553,6 +567,29 @@
    → 显式 `continue` 跳过。
 8. **一页可能有多个批注部件**：`relTargetByType()` 只返回第一个（留给备注页用），
    批注必须用新加的 `relTargetsByType()` 取全部。
+
+## 第四十阶段（2026-11-06）：三格式文档属性（谁写的、什么时候改的） ✅
+
+| # | 交付项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 选题（探针先行） | ✅ | 复验 7 根候选 + 扫 3 根新轴后选定 —— **候选清单第 7 次部分过期**。非缺口：DOCX 页眉页脚（含 `PAGE` 域）、XLSX 隐藏工作表内容（原本已覆盖）；真缺口：三格式 `docProps/core.xml`、DOCX 尾注、DOCX 图片 alt（`wp:docPr@descr`）、DOCX 批注回复、PDF 链接/注释/元数据、XLSX 定义名称/数据有效性。选 docProps 的判据：**三格式同时缺、一个函数即可共用、不改契约** |
+| 2 | 解析 | ✅ | 新增 `DOC_CORE_PROPS_ENTRY` / `DocCoreProps` / `parseCoreProps()` / `corePropsLine()`；取 `title` / `creator` / `lastModifiedBy` / `modified`；**按本地名匹配**（`<(?:[\w.-]+:)?title>`），不硬编码 `dc:` / `cp:` / `dcterms:` 前缀 |
+| 3 | 落位与输出 | ✅ | 置顶一行 `[文档信息] 标题: … · 作者: … · 修改人: … · 修改时间: …`；DOCX 在页眉前、PPTX 在 `[幻灯片 1]` 前、XLSX 在 `[工作表 …]` 前；**空字段逐个省略，四个全空或无部件一行不出**；PPTX / XLSX 元数据与正文紧邻（不额外插空行） |
+| 4 | 容错 | ✅ | 畸形 `core.xml`（标签未闭合）不抛异常、不输出半截值；无 `docProps` 的文件**输出逐字不变**；`maxChars` 截断时元数据仍在（它在最前） |
+| 5 | 输出与契约 | ✅ | **只改 `electron/main/document-preview.ts` 一个文件**（+71 / −8）；契约 / `host-bridge.ts` / `host-server.mjs` / `src/App.tsx` 不动 → **MCP 工具数仍 27**；**无新增依赖** |
+| 6 | 自测 + e2e + 回归 | ✅ | `phase4o-selftest.cjs` **17/17**（全字段 / 仅标题 / 无部件 / 空 core / 畸形 / 任意前缀 / 截断）；交叉复验 phase4n **74/74** · phase4m **72/72** · phase4l **41/41** · phase4j **30/30** · phase4k **27/27**；`phase4o-e2e.cjs` **17/17**（工具面 2 · 抽取 11 · 界面 4）→ `run73-phase4o.log`；全量回归 run73 二十七套 **936 PASS / 1 FAIL**（摘要 `run73-summary.txt`）：唯一失败 phase3r C3，根因是**事件库超 2000 条、回放硬上限 2000** 导致参照样本截断（`host-events.ts:409`），与本轮改动无关；复跑还出现 G3/G4 实时事件流时序抖动，进一步说明是该套件在脏环境下的既有问题。其余二十六套全绿。未跑真站 phase3s/3q |
+
+第四十阶段实证发现：
+
+1. **候选清单第 7 次部分过期**：上轮列的「DOCX 页眉页脚」实测**早已覆盖**（含 `PAGE` 域），
+   「XLSX 隐藏工作表」内容也已在输出里。**每轮都要重新探针**，不能照抄。
+2. **XML 前缀不能硬编码**：`dc:` / `cp:` / `dcterms:` 只是惯例，前缀可任意绑定；
+   解析 `core.xml` 必须按**本地名**匹配，否则非 Word 生成的文档元数据整段丢失。
+3. **PPTX / XLSX 的块间用 `\n\n`**：元数据若 `push` 成独立 block，会在元数据行与 `[幻灯片 1]` /
+   `[工作表 …]` 之间多一个空行（DOCX 用 `\n` 拼接不会）。正确做法是拼好 body 后前缀 `meta + '\n'`。
+4. **同一个「图片 alt」在两种格式里位置不同**：DOCX 在 `wp:docPr@descr`，PPTX 在 `p:nvPicPr` 的
+   `cNvPr@descr`。既有实现只做了 PPTX —— **别按概念推断“已完成”**。
+5. **元数据要「有则出、无则不出」**：空字段逐个省略比整行照搬更重要，否则每份文档都带一串空标签。
 
 ## 第三十二阶段（2026-11-05）：XLSX 区间级条件格式（top10 / 均值 / 重复值） ✅
 
