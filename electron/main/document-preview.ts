@@ -369,6 +369,10 @@ const DOCX_RELS_ENTRY = 'word/_rels/document.xml.rels'
 const DOCX_COMMENTS_ENTRY = 'word/comments.xml'
 /** 批注扩展部件：记录批注之间的回复关系（paraId → paraIdParent） */
 const DOCX_COMMENTS_EXTENDED_ENTRY = 'word/commentsExtended.xml'
+/** 图表部件（word/charts/chartN.xml） */
+const DOCX_CHART_RE = /^word\/charts\/chart\d*\.xml$/
+/** SmartArt 数据部件（word/diagrams/dataN.xml） */
+const DOCX_DIAGRAM_RE = /^word\/diagrams\/data\d*\.xml$/
 
 /** OOXML 三兄弟共用的文档属性部件（DOCX / XLSX / PPTX 位置相同） */
 const DOC_CORE_PROPS_ENTRY = 'docProps/core.xml'
@@ -496,6 +500,8 @@ interface DocxParts {
   comments: string
   /** 批注回复的线程结构（可缺失） */
   commentsExtended: string
+  /** 图形部件（图表 / SmartArt）：zip 内路径 → xml */
+  graphics: Record<string, string>
   coreProps: string
   appProps: string
   customProps: string
@@ -804,6 +810,8 @@ interface DocxRenderCtx {
   commentThread: Map<string, string[]>
   /** 作为回复存在的批注 id（跟根批注一起输出，不单独再出） */
   commentReplyIds: Set<string>
+  /** r:id → 图表 / SmartArt 标记（如 `[图表: …]`） */
+  graphics: Map<string, string>
 }
 
 /**
@@ -992,7 +1000,7 @@ function docxRevisionMarks(paragraph: string): string[] {
   return out
 }
 
-/** 段落末尾附加的修订 / 链接 / 批注（含回复）标记（没有就返回空串） */
+/** 段落末尾附加的修订 / 链接 / 批注（含回复）/ 图表标记（没有就返回空串） */
 function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
   const parts: string[] = docxRevisionMarks(paragraph)
   for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
@@ -1007,7 +1015,48 @@ function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
       if (r) parts.push(`[回复(${r.author}): ${r.text}]`)
     }
   }
+  parts.push(...graphicRefMarks(paragraph, ctx.graphics))
   return parts.length > 0 ? ` ${parts.join(' ')}` : ''
+}
+
+/**
+ * 正文 rels → 关系 id → 图表 / SmartArt 标记。
+ * 图表的关系类型是 …/chart，SmartArt 数据部件是 …/diagramData。
+ */
+function docxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const e of parseRelEntries(relsXml)) {
+    if (isExternalTarget(e.target)) continue
+    const xml = graphics[resolveRelTarget('word', e.target)]
+    if (!xml) continue
+    if (e.type.endsWith('/chart')) {
+      const mark = chartMarker(xml)
+      if (mark) map.set(e.id, mark)
+    } else if (e.type.endsWith('/diagramData')) {
+      const mark = smartArtMarker(xml)
+      if (mark) map.set(e.id, mark)
+    }
+  }
+  return map
+}
+
+/**
+ * XML 片段里的图形引用 → 图表 / SmartArt 标记（DOCX 段落 / PPTX graphicFrame 共用）。
+ * 图表是 `<c:chart r:id="…"/>`，SmartArt 是 `<dgm:relIds r:dm="…"/>`（数据部件的关系 id）。
+ */
+function graphicRefMarks(xml: string, graphics: Map<string, string>): string[] {
+  const out: string[] = []
+  for (const m of xml.matchAll(/<(?:[\w.-]+:)?chart\b([^>]*)/g)) {
+    const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    const mark = rid ? graphics.get(rid) : undefined
+    if (mark) out.push(mark)
+  }
+  for (const m of xml.matchAll(/<(?:[\w.-]+:)?relIds\b([^>]*)/g)) {
+    const rid = /\br:dm="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    const mark = rid ? graphics.get(rid) : undefined
+    if (mark) out.push(mark)
+  }
+  return out
 }
 
 /** 页眉/页脚部件 → 文本行（纯文本，不带结构标记） */
@@ -1182,7 +1231,8 @@ function extractDocxText(parts: DocxParts): string {
     hyperlinks: parseRels(parts.rels),
     comments,
     commentThread: threads.thread,
-    commentReplyIds: threads.replies
+    commentReplyIds: threads.replies,
+    graphics: docxGraphicMarkMap(parts.rels, parts.graphics)
   }
   const footnotes = parseDocxNotes(parts.footnotes, 'footnote')
   const endnotes = parseDocxNotes(parts.endnotes, 'endnote')
@@ -1261,13 +1311,19 @@ function readDocxParts(filePath: string): DocxParts {
       n === DOCX_COMMENTS_EXTENDED_ENTRY ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY ||
       DOCX_HEADER_RE.test(n) ||
-      DOCX_FOOTER_RE.test(n)
+      DOCX_FOOTER_RE.test(n) ||
+      DOCX_CHART_RE.test(n) ||
+      DOCX_DIAGRAM_RE.test(n)
   )
   const entry = files[DOCX_ENTRY]
   if (!entry) throw new Error(`缺少 ${DOCX_ENTRY}，不是有效的 DOCX 文件`)
   const dec = (u: Uint8Array | undefined): string =>
     u ? new TextDecoder('utf-8').decode(u) : ''
   const names = Object.keys(files)
+  const graphics: Record<string, string> = {}
+  for (const n of names.filter((n) => DOCX_CHART_RE.test(n) || DOCX_DIAGRAM_RE.test(n))) {
+    graphics[n] = dec(files[n])
+  }
   return {
     document: dec(entry),
     styles: dec(files[DOCX_STYLES_ENTRY]),
@@ -1279,10 +1335,185 @@ function readDocxParts(filePath: string): DocxParts {
     rels: dec(files[DOCX_RELS_ENTRY]),
     comments: dec(files[DOCX_COMMENTS_ENTRY]),
     commentsExtended: dec(files[DOCX_COMMENTS_EXTENDED_ENTRY]),
+    graphics,
     coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
     appProps: dec(files[DOC_APP_PROPS_ENTRY]),
     customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
   }
+}
+
+/* --------------------- 图形内容轴：图表 / SmartArt / 透视表 --------------------- */
+
+/**
+ * 取 XML 里所有指定**本地名**的元素（忽略命名空间前缀）。
+ *
+ * 与 xmlChildElements 的区别：不限深度，本地名匹配就收；自闭合标签记空体，
+ * 同名嵌套按栈配对（不会在内层提前收尾）。
+ * prefixes 给定时只收这些前缀的标签（'' = 无前缀），用于区分同名不同前缀的元素。
+ */
+function xmlElements(xml: string, local: string, prefixes?: string[]): XmlElement[] {
+  const out: XmlElement[] = []
+  const tokenRe = new RegExp(`<(/?)(?:([\\w.-]+):)?${local}\\b(?:\\s[^>]*?)?(/?)>`, 'g')
+  const stack: string[] = []
+  let curOpen = ''
+  let curStart = 0
+  let m: RegExpExecArray | null
+  while ((m = tokenRe.exec(xml)) !== null) {
+    const prefix = m[2] ?? ''
+    if (prefixes && !prefixes.includes(prefix)) continue
+    if (m[1] === '/') {
+      if (stack.length === 0) continue
+      stack.pop()
+      if (stack.length === 0) out.push({ tag: local, open: curOpen, body: xml.slice(curStart, m.index) })
+      continue
+    }
+    if (m[3] === '/') {
+      out.push({ tag: local, open: m[0], body: '' })
+      continue
+    }
+    if (stack.length === 0) {
+      curOpen = m[0]
+      curStart = m.index + m[0].length
+    }
+    stack.push(local)
+  }
+  return out
+}
+
+/** 片段里所有文本节点（DrawingML 的 <a:t>）拼起来 */
+function joinXmlTexts(fragment: string): string {
+  const parts: string[] = []
+  for (const el of xmlElements(fragment, 't', ['a', ''])) {
+    parts.push(decodeXmlEntities(el.body))
+  }
+  return parts.join('')
+}
+
+/** 元素列表里第一个非空文本 */
+function firstXmlText(els: XmlElement[]): string {
+  for (const el of els) {
+    const text = decodeXmlEntities(el.body).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+/** 图表信息：标题 + 系列名 */
+interface ChartInfo {
+  title: string
+  series: string[]
+}
+
+/**
+ * 图表部件（c:chartSpace）→ 标题 + 系列名。
+ *
+ * 标题取**图表级**的 c:title（在 c:plotArea 之前）；坐标轴标题在 c:plotArea 里，不算图表标题。
+ * 标题两种写法都认：c:tx/c:rich 的富文本，或 c:tx/c:strRef 的缓存值。
+ * 系列名取 c:ser/c:tx：c:strRef 缓存值或字面量 c:v。
+ *
+ * resolveFormula 是兜底：strRef 没写缓存值时（openpyxl 就不写 strCache），
+ * 按 c:f 里的单元格公式回查原表。DOCX/PPTX 的图表没有单元格上下文，不传。
+ */
+function parseChartInfo(xml: string, resolveFormula?: (formula: string) => string): ChartInfo {
+  if (!xml) return { title: '', series: [] }
+  const chartEl = xmlElements(xml, 'chart')[0]
+  const body = chartEl ? chartEl.body : xml
+  const plotIdx = /<(?:[\w.-]+:)?plotArea\b/.exec(body)?.index ?? -1
+  const head = plotIdx >= 0 ? body.slice(0, plotIdx) : body
+  // strRef 取值：先读缓存值（c:strCache 里的 c:v），没有再按 c:f 公式回查
+  const strRefText = (refBody: string): string => {
+    const cached = firstXmlText(xmlElements(refBody, 'v'))
+    if (cached) return cached
+    if (!resolveFormula) return ''
+    const formula = firstXmlText(xmlElements(refBody, 'f'))
+    return formula ? resolveFormula(formula).trim() : ''
+  }
+  let title = ''
+  for (const t of xmlElements(head, 'title')) {
+    const rich = xmlElements(t.body, 'rich')[0]
+    if (rich) {
+      const text = joinXmlTexts(rich.body).trim()
+      if (text) {
+        title = text
+        break
+      }
+    }
+    const ref = xmlElements(t.body, 'strRef')[0]
+    if (ref) {
+      const text = strRefText(ref.body)
+      if (text) {
+        title = text
+        break
+      }
+    }
+  }
+  const series: string[] = []
+  for (const ser of xmlElements(body, 'ser')) {
+    const tx = xmlElements(ser.body, 'tx')[0]
+    if (!tx) continue
+    const ref = xmlElements(tx.body, 'strRef')[0]
+    let name = ref ? strRefText(ref.body) : ''
+    if (!name) name = firstXmlText(xmlElements(tx.body, 'v'))
+    if (name) series.push(name)
+  }
+  return { title, series }
+}
+
+/** 图表部件 → `[图表: 标题 · 系列1, 系列2]`（标题与系列都空则不出标记） */
+function chartMarker(xml: string, resolveFormula?: (formula: string) => string): string {
+  const info = parseChartInfo(xml, resolveFormula)
+  const bits: string[] = []
+  if (info.title) bits.push(info.title)
+  if (info.series.length > 0) bits.push(info.series.join(', '))
+  return bits.length > 0 ? `[图表: ${bits.join(' · ')}]` : ''
+}
+
+/**
+ * 图表里的单元格公式（`'数据'!B1` / `Sheet1!$B$1`）→ 工作表名 + 单元格引用。
+ * 只认「表名!单元格」这种单格引用；区间、跨表数组等一律不解析。
+ */
+function parseChartFormula(formula: string): { sheet: string; ref: string } | null {
+  const t = formula.trim()
+  const quoted = /^'((?:[^']|'')+)'!\$?([A-Z]+)\$?(\d+)$/.exec(t)
+  if (quoted) return { sheet: quoted[1].replace(/''/g, "'"), ref: `${quoted[2]}${quoted[3]}` }
+  const plain = /^([^!]+)!\$?([A-Z]+)\$?(\d+)$/.exec(t)
+  if (plain) return { sheet: plain[1].trim(), ref: `${plain[2]}${plain[3]}` }
+  return null
+}
+
+/**
+ * SmartArt 数据部件（dgm:dataModel）→ `[SmartArt: 节点1, 节点2]`。
+ * 文本在 dgm:pt 里的 a:t；type="doc" 的根节点不算内容。
+ */
+function smartArtMarker(xml: string): string {
+  if (!xml) return ''
+  const texts: string[] = []
+  const seen = new Set<string>()
+  for (const pt of xmlElements(xml, 'pt')) {
+    if (/\btype="doc"/.test(pt.open)) continue
+    const text = joinXmlTexts(pt.body).trim()
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    texts.push(text)
+  }
+  return texts.length > 0 ? `[SmartArt: ${texts.join(', ')}]` : ''
+}
+
+/** 数据透视表部件（pivotTableDefinition）→ `[透视表: 名称 · 字段: …]` */
+function pivotTableMarker(xml: string): string {
+  if (!xml) return ''
+  const def = /<(?:[\w.-]+:)?pivotTableDefinition\b([^>]*)>/.exec(xml)
+  if (!def) return ''
+  const name = decodeXmlEntities(/\bname="([^"]*)"/.exec(def[1] ?? '')?.[1] ?? '').trim()
+  const fields: string[] = []
+  for (const f of xmlElements(xml, 'pivotField')) {
+    const field = decodeXmlEntities(/\bname="([^"]*)"/.exec(f.open)?.[1] ?? '').trim()
+    if (field && !fields.includes(field)) fields.push(field)
+  }
+  const head = name || '未命名'
+  return fields.length > 0
+    ? `[透视表: ${head} · 字段: ${fields.join(', ')}]`
+    : `[透视表: ${head}]`
 }
 
 /* ------------------------------ PPTX / XLSX 抽取 ------------------------------ */
@@ -1297,6 +1528,14 @@ const XLSX_SHEET_RELS_RE = /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/
 const XLSX_COMMENTS_RE = /^xl\/comments\d+\.xml$/
 const XLSX_TABLES_RE = /^xl\/tables\/table\d+\.xml$/
 const XLSX_THREADED_COMMENTS_RE = /^xl\/threadedComments\/[^/]+\.xml$/
+/** 图表部件（xl/charts/chartN.xml） */
+const XLSX_CHART_RE = /^xl\/charts\/chart\d*\.xml$/
+/** 绘图部件（xl/drawings/drawingN.xml，工作表里的图表挂在它下面） */
+const XLSX_DRAWING_RE = /^xl\/drawings\/drawing\d*\.xml$/
+/** 绘图部件自己的 rels（drawing → chart 是第二层关系） */
+const XLSX_DRAWING_RELS_RE = /^xl\/drawings\/_rels\/drawing\d*\.xml\.rels$/
+/** 数据透视表部件（xl/pivotTables/pivotTableN.xml） */
+const XLSX_PIVOT_RE = /^xl\/pivotTables\/pivotTable\d*\.xml$/
 const XLSX_PERSONS_ENTRY = 'xl/persons/person.xml'
 
 /** 解码 zip 条目为 UTF-8 文本 */
@@ -1386,7 +1625,11 @@ const PPTX_NOTES_RE = /^ppt\/notesSlides\/notesSlide\d+\.xml$/
 /** 批注部件（旧的 ppt/comments/comment1.xml / 新的 ppt/comments/modernComment_*.xml） */
 const PPTX_COMMENTS_RE = /^ppt\/comments\/[^/]+\.xml$/
 /** 作者表部件（旧的 ppt/commentAuthors.xml / 新的 ppt/authors.xml） */
-const PPTX_AUTHORS_RE = /^ppt\/[^/]*[Aa]uthor[^/]*\.xml$/
+const PPTX_AUTHORS_RE = /^ppt\/(?:[^/]*[Aa]uthor[^/]*\.xml|[Aa]uthors\/[^/]+\.xml)$/
+/** 图表部件（ppt/charts/chartN.xml） */
+const PPTX_CHART_RE = /^ppt\/charts\/chart\d*\.xml$/
+/** SmartArt 数据部件（ppt/diagrams/dataN.xml） */
+const PPTX_DIAGRAM_RE = /^ppt\/diagrams\/data\d*\.xml$/
 
 /** 只是占位的形状类型：页码 / 日期 / 页眉页脚（抽出来是噪音，不是内容） */
 const PPTX_SKIP_PLACEHOLDERS = new Set(['sldNum', 'dt', 'hdrFtr', 'ftr'])
@@ -1401,6 +1644,8 @@ interface PptxParts {
   comments: Record<string, string>
   /** 作者表部件：zip 内路径 → xml */
   authors: Record<string, string>
+  /** 图形部件（图表 / SmartArt）：zip 内路径 → xml */
+  graphics: Record<string, string>
   /** docProps/core.xml 原文 */
   coreProps: string
   /** docProps/app.xml 原文 */
@@ -1443,6 +1688,8 @@ interface PptxComment {
   text: string
   /** 归属形状 id（p:cm@idx）；没有就是空串 */
   shapeId: string
+  /** 挂在这个批注下的回复（多级已摊平到根） */
+  replies: PptxComment[]
 }
 
 /** 一页幻灯片的渲染上下文 */
@@ -1455,6 +1702,8 @@ interface PptxRenderCtx {
   used: Set<string>
   /** 没有归属形状 id 的批注 → 该页末尾 */
   loose: PptxComment[]
+  /** r:id → 图表 / SmartArt 标记 */
+  graphics: Map<string, string>
 }
 
 /** slide rels 里的外部超链接：rId → URL（内部跳转 / 内部部件不进） */
@@ -1506,20 +1755,78 @@ function pptxCommentText(body: string): string {
   return parts.join('').trim()
 }
 
-/** 批注部件 → 批注清单（旧的 p:cm / 新的 p188:cm 都认） */
+/**
+ * 批注部件 → 批注清单（旧的 p:cm / 新的 p188:cm 都认）。
+ *
+ * 回复两种写法都认：
+ * - 注解版（2018/annotation）：回复是独立的 p188:cm，用 paraIdParent 指回父批注；
+ * - 规范版（2018/8/main）：回复是 p188:replyLst 里的 p188:reply。
+ * 多级回复摊平挂到根批注；父批注找不到就按独立批注输出（不猜）。
+ */
 function parsePptxComments(xml: string, authors: Map<string, string>): PptxComment[] {
   const out: PptxComment[] = []
   if (!xml) return out
+  interface Node {
+    comment: PptxComment
+    paraId: string
+    parentParaId: string
+  }
+  const nodes: Node[] = []
+  const byParaId = new Map<string, Node>()
   for (const m of xml.matchAll(/<((?:\w+:)?)cm\b([^>]*?)(\/>|>([\s\S]*?)<\/\1cm>)/g)) {
     const attrs = m[2] ?? ''
     const body = m[4] ?? ''
     if (!body) continue
     const authorId = /\bauthorId="([^"]*)"/.exec(attrs)?.[1] ?? ''
     const shapeId = /\bidx="([^"]*)"/.exec(attrs)?.[1] ?? ''
-    const text = pptxCommentText(body)
-    if (!text) continue
-    out.push({ author: authors.get(authorId) ?? '', text, shapeId })
+    const paraId = /\bparaId="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    const parentParaId = /\bparaIdParent="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    // 回复体（p188:replyLst 里的 p188:reply）单独摘出来，根批注正文不含它们
+    const replies: PptxComment[] = []
+    for (const rm of body.matchAll(/<((?:\w+:)?)reply\b([^>]*?)(\/>|>([\s\S]*?)<\/\1reply>)/g)) {
+      const rBody = rm[4] ?? ''
+      if (!rBody) continue
+      const rAuthorId = /\bauthorId="([^"]*)"/.exec(rm[2] ?? '')?.[1] ?? ''
+      const rText = pptxCommentText(rBody)
+      if (!rText) continue
+      replies.push({ author: authors.get(rAuthorId) ?? '', text: rText, shapeId: '', replies: [] })
+    }
+    const ownBody = body.replace(/<((?:\w+:)?)replyLst\b[^>]*>[\s\S]*?<\/\1replyLst>/g, '')
+    const text = pptxCommentText(ownBody)
+    if (!text && replies.length === 0) continue
+    const comment: PptxComment = { author: authors.get(authorId) ?? '', text, shapeId, replies }
+    const node: Node = { comment, paraId, parentParaId }
+    nodes.push(node)
+    if (paraId) byParaId.set(paraId, node)
   }
+  // 沿 paraIdParent 上溯到根批注（多级摊平；成环时停在当前节点）
+  const rootOf = (node: Node): Node => {
+    let cur = node
+    const seen = new Set<Node>([cur])
+    while (cur.parentParaId && byParaId.has(cur.parentParaId)) {
+      const parent = byParaId.get(cur.parentParaId) as Node
+      if (seen.has(parent)) break
+      seen.add(parent)
+      cur = parent
+    }
+    return cur
+  }
+  for (const node of nodes) {
+    if (!node.parentParaId || !byParaId.has(node.parentParaId)) continue
+    const root = rootOf(node)
+    if (root === node) continue
+    root.comment.replies.push(node.comment)
+  }
+  return nodes
+    .filter((n) => !n.parentParaId || !byParaId.has(n.parentParaId))
+    .map((n) => n.comment)
+}
+
+/** 批注（含回复）→ 输出标记：根批注 `[批注(作者): …]`，回复 `[回复(作者): …]` */
+function pptxCommentMarks(c: PptxComment): string[] {
+  const out: string[] = []
+  if (c.text) out.push(`[批注(${c.author}): ${c.text}]`)
+  for (const r of c.replies) out.push(`[回复(${r.author}): ${r.text}]`)
   return out
 }
 
@@ -1631,6 +1938,7 @@ function pptxTreeBlocks(treeXml: string, ctx: PptxRenderCtx): string[] {
     } else if (child.tag === 'p:graphicFrame') {
       const table = pptxTableMarkdown(child.body)
       if (table) blocks.push(table)
+      blocks.push(...graphicRefMarks(child.body, ctx.graphics))
     } else {
       const alt = pptxPictureAlt(child.body)
       if (alt) blocks.push(`[图片: ${alt}]`)
@@ -1642,7 +1950,7 @@ function pptxTreeBlocks(treeXml: string, ctx: PptxRenderCtx): string[] {
       const cs = ctx.comments.get(id)
       if (cs) {
         ctx.used.add(id)
-        for (const c of cs) marks.push(`[批注(${c.author}): ${c.text}]`)
+        for (const c of cs) marks.push(...pptxCommentMarks(c))
       }
     }
     if (marks.length > 0 && blocks.length > start) {
@@ -1697,6 +2005,8 @@ function readPptxParts(filePath: string): PptxParts {
       PPTX_NOTES_RE.test(n) ||
       PPTX_COMMENTS_RE.test(n) ||
       PPTX_AUTHORS_RE.test(n) ||
+      PPTX_CHART_RE.test(n) ||
+      PPTX_DIAGRAM_RE.test(n) ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
   const dec = (u: Uint8Array | undefined): string =>
@@ -1710,6 +2020,10 @@ function readPptxParts(filePath: string): PptxParts {
   for (const n of names.filter((n) => PPTX_COMMENTS_RE.test(n))) comments[n] = dec(files[n])
   const authors: Record<string, string> = {}
   for (const n of names.filter((n) => PPTX_AUTHORS_RE.test(n))) authors[n] = dec(files[n])
+  const graphics: Record<string, string> = {}
+  for (const n of names.filter((n) => PPTX_CHART_RE.test(n) || PPTX_DIAGRAM_RE.test(n))) {
+    graphics[n] = dec(files[n])
+  }
   const slides = slideNames
     .sort((a, b) => slideNo(a) - slideNo(b))
     .map((name) => ({
@@ -1724,6 +2038,7 @@ function readPptxParts(filePath: string): PptxParts {
     notes,
     comments,
     authors,
+    graphics,
     coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
     appProps: dec(files[DOC_APP_PROPS_ENTRY]),
     customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
@@ -1773,7 +2088,31 @@ function pptxRenderCtx(parts: PptxParts, slide: PptxParts['slides'][number]): Pp
       comments.set(c.shapeId, arr)
     })
   })
-  return { links: pptxLinkTargets(slide.rels), comments, used: new Set<string>(), loose }
+  return {
+    links: pptxLinkTargets(slide.rels),
+    comments,
+    used: new Set<string>(),
+    loose,
+    graphics: pptxGraphicMarkMap(slide.rels, parts.graphics)
+  }
+}
+
+/** 幻灯片 rels → 关系 id → 图表 / SmartArt 标记 */
+function pptxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const e of parseRelEntries(relsXml)) {
+    if (isExternalTarget(e.target)) continue
+    const xml = graphics[resolveRelTarget('ppt/slides', e.target)]
+    if (!xml) continue
+    if (e.type.endsWith('/chart')) {
+      const mark = chartMarker(xml)
+      if (mark) map.set(e.id, mark)
+    } else if (e.type.endsWith('/diagramData')) {
+      const mark = smartArtMarker(xml)
+      if (mark) map.set(e.id, mark)
+    }
+  }
+  return map
 }
 
 /**
@@ -1794,7 +2133,7 @@ export function extractPptxText(filePath: string): string {
     ctx.comments.forEach((cs, id) => {
       if (!ctx.used.has(id)) orphans.push(...cs)
     })
-    for (const c of orphans) lines.push(`[批注(${c.author}): ${c.text}]`)
+    for (const c of orphans) lines.push(...pptxCommentMarks(c))
     const notesPath = relTargetByType(slide.rels, '/notesSlide', 'ppt/slides')
     const notes = pptxNotesText(notesPath ? (parts.notes[notesPath] ?? '') : '')
     if (notes) lines.push(`[备注] ${notes}`)
@@ -1826,6 +2165,18 @@ function colFromRef(ref: string): number {
   let n = 0
   for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64)
   return n - 1
+}
+
+/** 列号（0 起）→ 字母（0 → A，26 → AA） */
+function colLetters(col: number): string {
+  let n = col + 1
+  let s = ''
+  while (n > 0) {
+    const r = (n - 1) % 26
+    s = String.fromCharCode(65 + r) + s
+    n = Math.floor((n - 1) / 26)
+  }
+  return s
 }
 
 /** 取 `<v>` 里的原始值 */
@@ -3570,7 +3921,8 @@ function parseXlsxSheet(
   shared: string[],
   styles: XlsxStyles,
   date1904: boolean,
-  extras: Map<string, string>
+  extras: Map<string, string>,
+  cellMap?: Map<string, string>
 ): string[] {
   interface Cell {
     row: number
@@ -3649,6 +4001,9 @@ function parseXlsxSheet(
           if (sections.length >= 4) sectionColor = sectionColorName(sections[3] ?? '')
         }
       }
+
+      // 单元格文本索引（图表系列名兜底：strRef 无缓存值时按公式回查这张表）
+      if (cellMap && value !== '') cellMap.set(ref ?? `${colLetters(col)}${rowNo}`, value)
 
       // 公式：`<f>` 的体（普通 / 数组公式直接取；共享公式 follower 只有 si，靠 master 回填）
       const fEl = /<f\b([^>]*?)(\/>|>([\s\S]*?)<\/f>)/.exec(cellInner)
@@ -3736,6 +4091,47 @@ function parseXlsxSheet(
  * 单元格值分三类：`t="s"` 走 sharedStrings、`t="inlineStr"` 走内联字符串、其余是 `<v>` 里的原始值。
  * 日期还原：单元格 `s="i"` → `xl/styles.xml` 的 cellXfs[i] → numFmtId → 是日期/时间格式就把序列号转成日期。
  */
+/**
+ * 工作表里的图表与数据透视表标记。
+ *
+ * 图表要过两层关系：工作表 → xl/drawings/drawingN.xml → xl/charts/chartN.xml；
+ * 数据透视表是一层：工作表 → xl/pivotTables/pivotTableN.xml。
+ */
+function xlsxSheetGraphics(
+  sheetXml: string,
+  relEntries: RelEntry[],
+  entries: Record<string, Uint8Array>,
+  resolveFormula?: (formula: string) => string
+): string[] {
+  const out: string[] = []
+  const rels = new Map(relEntries.map((e) => [e.id, e.target]))
+  const drawingRel = relEntries.find((e) => e.type.endsWith('/drawing'))
+  if (drawingRel && !isExternalTarget(drawingRel.target)) {
+    const drawingPath = resolveRelTarget('xl/worksheets', drawingRel.target)
+    const drawingXml = decodeEntry(entries[drawingPath]) ?? ''
+    const drawingRelsPath = drawingPath.replace(/([^/]+)$/, '_rels/$1.rels')
+    const drawingRels = parseRels(decodeEntry(entries[drawingRelsPath]) ?? '')
+    for (const m of drawingXml.matchAll(/<(?:[\w.-]+:)?chart\b([^>]*)/g)) {
+      const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+      const target = rid ? drawingRels.get(rid) : undefined
+      if (!target || isExternalTarget(target)) continue
+      const mark = chartMarker(
+        decodeEntry(entries[resolveRelTarget('xl/drawings', target)]) ?? '',
+        resolveFormula
+      )
+      if (mark) out.push(mark)
+    }
+  }
+  for (const m of sheetXml.matchAll(/<(?:[\w.-]+:)?pivotTablePart\b([^>]*)/g)) {
+    const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    const target = rid ? rels.get(rid) : undefined
+    if (!target || isExternalTarget(target)) continue
+    const mark = pivotTableMarker(decodeEntry(entries[resolveRelTarget('xl/worksheets', target)]) ?? '')
+    if (mark) out.push(mark)
+  }
+  return out
+}
+
 export function extractXlsxText(filePath: string): string {
   const entries = readZipEntries(
     filePath,
@@ -3749,6 +4145,10 @@ export function extractXlsxText(filePath: string): string {
       XLSX_COMMENTS_RE.test(n) ||
       XLSX_TABLES_RE.test(n) ||
       XLSX_THREADED_COMMENTS_RE.test(n) ||
+      XLSX_CHART_RE.test(n) ||
+      XLSX_DRAWING_RE.test(n) ||
+      XLSX_DRAWING_RELS_RE.test(n) ||
+      XLSX_PIVOT_RE.test(n) ||
       n === XLSX_PERSONS_ENTRY ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
@@ -3787,6 +4187,17 @@ export function extractXlsxText(filePath: string): string {
   const definedLine = parseXlsxDefinedNames(workbook, sheets.map((s) => s.name))
   const persons = parseXlsxPersons(decodeEntry(entries[XLSX_PERSONS_ENTRY]))
   const blocks: string[] = []
+  // 先把每个工作表解析完再出块：图表系列名可能要回查别的表的单元格（strRef 没缓存值时）
+  interface PreparedSheet {
+    name: string
+    sheetXml: string
+    relEntries: RelEntry[]
+    rows: string[]
+    tableLine: string
+    dvLine: string
+    cellMap: Map<string, string>
+  }
+  const prepared: PreparedSheet[] = []
   for (const sheet of sheets) {
     const sheetXml = decodeEntry(entries[sheet.path]) ?? ''
     // 工作表自己的 rels：超链接目标 + 批注部件都在这里
@@ -3816,8 +4227,8 @@ export function extractXlsxText(filePath: string): string {
     }
     const threaded = parseXlsxThreadedComments(threadXml, persons)
     const extras = xlsxCellExtras(links, comments, threaded)
-    const rows = parseXlsxSheet(sheetXml, shared, styles, date1904, extras)
-    if (rows.length === 0) continue
+    const cellMap = new Map<string, string>()
+    const rows = parseXlsxSheet(sheetXml, shared, styles, date1904, extras, cellMap)
     // 表格对象：rels 里 Type 结尾 /table 的部件（一表可多个，「 · 」拼一行）
     const tableFrags: string[] = []
     for (const e of relEntries) {
@@ -3827,10 +4238,39 @@ export function extractXlsxText(filePath: string): string {
       )
       if (frag) tableFrags.push(frag)
     }
-    const tableLine = tableFrags.length > 0 ? `[表格] ${tableFrags.join(' · ')}\n` : ''
-    const dvLine = parseXlsxDataValidations(sheetXml)
-    const tail = dvLine ? `\n${dvLine}` : ''
-    blocks.push(`[工作表 ${sheet.name}]\n${tableLine}${rows.join('\n')}${tail}`)
+    prepared.push({
+      name: sheet.name,
+      sheetXml,
+      relEntries,
+      rows,
+      tableLine: tableFrags.length > 0 ? `[表格] ${tableFrags.join(' · ')}\n` : '',
+      dvLine: parseXlsxDataValidations(sheetXml),
+      cellMap
+    })
+  }
+  // 全工作簿单元格索引（`表名!A1` → 单元格文本）
+  const cellIndex = new Map<string, string>()
+  for (const p of prepared) {
+    for (const [ref, value] of p.cellMap) cellIndex.set(`${p.name}!${ref}`, value)
+  }
+  // 图表里 strRef 没有缓存值时的兜底：按 `表名!单元格` 公式回查
+  const resolveChartFormula = (formula: string): string => {
+    const ref = parseChartFormula(formula)
+    if (!ref) return ''
+    return cellIndex.get(`${ref.sheet}!${ref.ref}`) ?? ''
+  }
+  for (const p of prepared) {
+    if (p.rows.length === 0) continue
+    const tail = p.dvLine ? `\n${p.dvLine}` : ''
+    // 图表与数据透视表：挂在所属工作表末尾
+    const graphicLines = xlsxSheetGraphics(
+      p.sheetXml,
+      p.relEntries,
+      entries,
+      resolveChartFormula
+    )
+    const graphicTail = graphicLines.length > 0 ? `\n${graphicLines.join('\n')}` : ''
+    blocks.push(`[工作表 ${p.name}]\n${p.tableLine}${p.rows.join('\n')}${tail}${graphicTail}`)
   }
   const body = normalizeText(blocks.join('\n\n'))
   const top = [meta, definedLine].filter((s) => s !== '').join('\n')
