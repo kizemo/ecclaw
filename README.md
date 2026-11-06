@@ -1682,6 +1682,24 @@ XLSX 单元格只剩算好的值（`SUM(B1:B9)` 变成 `30`），agent 不知道
 
 ---
 
+### 5.47 DOCX 尾注 + 图片替代文字 + 批注回复（第四十三阶段）
+
+补三处 DOCX 真缺口：`word/endnotes.xml` 整件被跳过、`wp:docPr` 的 alt 文本被丢、
+`word/commentsExtended.xml` 的回复链断在 `commentRangeStart` 口径外。
+
+- **尾注**：与脚注同口径——正文引用处内联 `[N]`（按正文引用顺序编号，独立计数），
+  文末 `[尾注]` 段排在 `[脚注]` 段之后；分隔符（`id ≤ 0`）不进段；多段正文空格连接。
+- **图片替代文字**：`<wp:docPr>` 的 `descr` 优先、`title` 兜底，内联输出 `[图片: …]`；
+  两者都空不出标记；`name`（「图片 N」）是噪音不进输出；XML 实体解码。
+- **批注回复**：`comments.xml` 每条批注取其**首段 `paraId`**（本地名匹配），
+  `commentsExtended.xml` 的 `commentEx paraId → paraIdParent` 建回复链；
+  回复挂在根批注之后按文档顺序摊平输出 `[回复(作者): 文本]`（多级链一并展开），
+  回复自带的 `commentRangeStart` 不再重复输出；`paraIdParent` 指向未知批注时按独立批注处理。
+- **回归红线**：没有 endnotes / docPr alt / commentsExtended 的文档，输出与改动前**逐字一致**。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
+---
+
 ## 6. 技能与文件库
 
 - **技能**：`<stateDir>/skills`（托管）与 `<stateDir>/user-skills`（用户自建），
@@ -1845,7 +1863,13 @@ PPTX / XLSX 元数据行与正文紧邻不插空行；畸形 XML 不影响正文
 **docProps 扩展**（`docProps/app.xml` 的应用 / 公司 / 页数 / 字数并入 `[文档信息]` 同一行；
 `docProps/custom.xml` 的自定义属性单独一行 `[自定义属性] 名称: 值`；
 空字段逐个省略、全空不出行；三格式共用同一套解析，任意前缀按本地名匹配；
-没有这两个部件的文档输出逐字不变；工具数仍 27，见 §5.46）。
+没有这两个部件的文档输出逐字不变；工具数仍 27，见 §5.46）、
+**DOCX 尾注 + 图片替代文字 + 批注回复**（`word/endnotes.xml` 与脚注同口径：正文内联 `[N]`
+按引用顺序独立编号、`[尾注]` 段排在 `[脚注]` 段之后、分隔符不进段；
+`wp:docPr` 的 `descr` 优先 `title` 兜底内联 `[图片: …]`，都空不出标记、`name` 不进输出；
+`commentsExtended.xml` 的 `paraId → paraIdParent` 建回复链，回复摊平挂根批注之后
+`[回复(作者): 文本]`、自带锚点不重复出，父未知按独立批注处理；
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.47）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

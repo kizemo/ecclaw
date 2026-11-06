@@ -303,6 +303,15 @@
 > 交接见 `handoff-ecclaw-phase3p-final-2026-11-03.md`（第十五阶段收官）、`handoff-ecclaw-phase3p-2026-11-03.md`（第十五阶段实施细节）、
 > 交接见 `handoff-ecclaw-phase3o-final-2026-11-02.md`（第十四阶段收官）、`handoff-ecclaw-phase3o-2026-11-02.md`（第十四阶段实施细节）、`handoff-ecclaw-phase3m-final-2026-11-02.md`（第十三阶段收官）、`handoff-ecclaw-phase3m-2026-11-02.md`（第十三阶段实施细节）、`handoff-ecclaw-phase3l-2026-11-02.md`（第十二阶段收官）、`handoff-ecclaw-phase3k-2026-11-02.md`（第十一阶段收官）、`handoff-ecclaw-phase3j-2026-11-02.md`（第十阶段收官）、`handoff-ecclaw-phase3i-2026-11-02.md`（第九阶段收官）、`handoff-ecclaw-phase3h-2026-11-02.md`（第八阶段收官）、`handoff-ecclaw-phase3g-2026-11-02.md`（第七阶段收官）、`handoff-ecclaw-phase3f-2026-11-02.md`（第六阶段收官）、`handoff-ecclaw-phase3e-2026-11-02.md`（第五阶段收官）、`handoff-ecclaw-phase3c-2026-11-02.md`（第四阶段）。
 
+> **第四十三阶段（DOCX 尾注 + 图片替代文字 + 批注回复）已完成并真机验证（`phase4r-e2e.cjs` **26/26** 全绿 + 自测 **19/19**）**：
+> `word/endnotes.xml` 此前整件被跳过 → 与脚注同口径补齐（正文内联 `[N]` 按引用顺序**独立计数**、
+> `[尾注]` 段排在 `[脚注]` 段之后、分隔符 id≤0 不进段）；`wp:docPr` 的 alt 此前被丢 → `descr` 优先 `title`
+> 兜底内联 `[图片: …]`（`name` 是「图片 N」噪音不进输出）；`commentsExtended.xml` 的回复链此前断在
+> `commentRangeStart` 口径外 → 批注首段 `paraId` ↔ `paraIdParent` 建链，回复按文档顺序**摊平挂根**输出
+> `[回复(作者): 文本]`、回复自带锚点不重复出、父未知按独立批注处理。无这三类部件的文档输出**逐字不变**
+> （回归红线断言锁死）。只改 `document-preview.ts`，工具数仍 27。全量回归 `run76-*`（phase3r C3 为事件库
+> >2000 条既有环境失败）。交接见 `handoff-ecclaw-phase4r-final-2026-11-06.md`。
+
 ## 第二十三阶段（2026-11-04）：PPTX / XLSX 抽取 ✅
 
 | # | 交付项 | 状态 | 证据 |
@@ -592,6 +601,25 @@
    → 显式 `continue` 跳过。
 8. **一页可能有多个批注部件**：`relTargetByType()` 只返回第一个（留给备注页用），
    批注必须用新加的 `relTargetsByType()` 取全部。
+
+## 第四十三阶段（2026-11-06）：DOCX 尾注 / 图片 alt / 批注回复 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **尾注**：新部件 `word/endnotes.xml` 入抽取清单；脚注管道参数化（`docxNoteNumbers` /
+   `parseDocxNotes` 按 kind），正文引用处内联 `[N]`、文末 `[尾注]` 段排在 `[脚注]` 段之后。
+2. **图片 alt**：`docxRuns` 识别 `<wp:docPr>`，`descr` 优先、`title` 兜底，实体解码后内联
+   `[图片: …]`；两者皆空不出标记；`name` 不进输出。
+3. **批注回复**：`parseDocxComments` 附带每条批注首段 `paraId`；新函数 `buildDocxCommentThreads`
+   解析 `commentsExtended.xml` 的 `commentEx paraId→paraIdParent`，回复摊平挂根输出
+   `[回复(作者): 文本]`；回复自带的 `commentRangeStart` 跳过；父指向未知批注 → 独立批注；成环 seen 兜底。
+
+**第四十三阶段实证发现**：
+- 脚注与尾注**各自独立编号**，同段可出现 `脚[1]尾[1]` —— 属正常（靠段标题区分），不是 bug。
+- `paraIdParent="` 接不上 `paraId="` 正则（`Parent` 挡在 `="` 前），本地名匹配天然安全。
+- alt 标记进 `docxRuns` 后自动覆盖正文 + 表格单元格两条 run 渲染路径；
+  `docxParagraphText` 纯文本路径（脚注/批注正文）不受影响 —— 正是既有口径。
+- 无回复链部件的文档走不进新分支 → 输出逐字不变（th3/mix1 双断言锁死回归红线）。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 
