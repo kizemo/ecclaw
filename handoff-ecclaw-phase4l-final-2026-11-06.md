@@ -2,7 +2,7 @@
 
 > **一句话状态**：主题「**链接 + 批注（DOCX / XLSX 双格式）**」→ 代码 ✅ → typecheck ✅ →
 > 秒级自测 **41/41** ✅ → e2e **37/37** ✅ → **全量回归 run70 二十四套 792/792 全绿** ✅ →
-> 收尾文档 ✅ → **已提交**。
+> 收尾文档 ✅ → **已提交**（feat `198f3e8`）。
 >
 > MCP 工具数仍 **27**；无新增依赖；**只改 `electron/main/document-preview.ts` 一个产品文件**。
 
@@ -170,7 +170,7 @@
 
 | 提交 | 内容 |
 |---|---|
-| `__FEAT_COMMIT__` | `feat(document-preview): add DOCX/XLSX links and comments` —— 本阶段 feat |
+| `198f3e8` | `feat(document-preview): add DOCX/XLSX links and comments` —— 本阶段 feat（6 files, +717/−17） |
 | `__DOC_COMMIT__` | `docs: record phase 4l commit hash in handoff` —— 本次回填 |
 
 已精确 `git add` 下列文件提交（**未用 `git add -A`**）：
