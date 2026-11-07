@@ -339,6 +339,7 @@
 > 交接见 `handoff-ecclaw-phase4t-final-2026-11-07.md`。
 
 > **第四十八阶段（PDF 内嵌附件 / PPTX 母版版式文本 / DOCX OLE 嵌入对象 + 自定义 XML + 文本框标记 / XLSX 外部链接缓存值 / 图表数据标签与图例）已完成并真机验证（自测 **33/33** + e2e **34/34**；全量回归 **run81** 三十五套全绿，唯一红 phase3r B3/C3 为回放上限 2000 的既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase4w-final-2026-11-07.md`。**
+> **第四十九阶段（DOCX 修订日期 / XLSX 合并单元格+工作表保护 / DOCX·PPTX 图片尺寸 / 图表次轴+类型）已完成并真机验证（自测 **35/35** + e2e **34/34**；全量回归 **run82** 三十六套全绿，唯一红 phase3r B3/C3 为回放上限 2000 的既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase49-final-2026-11-07.md`。**
 > **第四十七阶段（DOCX 域代码 + XLSX 公式范围 / 外部链接）已完成并真机验证（自测 **20/20** + e2e **17/17**；全量回归 **run80** 三十四套，唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase4v-final-2026-11-07.md`。**
 > **第四十六阶段（图表深度：坐标轴标题 / 类别 / 数值 + XLSX 隐藏表标记）已完成并真机验证（`phase4u-e2e.cjs` **43/43** 全绿 + 自测 **27/27**）**：
 > 第四十五阶段的图表标记只有「标题 + 系列名」，**坐标轴标题与全部数值仍然看不到** →
@@ -874,6 +875,49 @@ harness 机器计数漏计）、phase4m 改两条旧格式断言后补跑 **50/5
 脚本级更新断言、**零产品改动**）；唯一红 phase3r B3/C3 是 `host-events.ts` 回放 limit 上限 2000
 而落盘事件已累积到 observe+approval=2031 被截断（run80 时尚未越线），与本阶段无关。
 未跑真站 phase3s / phase3q（红线）。
+
+## 第四十九阶段（2026-11-07）：DOCX 修订日期 / XLSX 合并单元格+工作表保护 / DOCX·PPTX 图片尺寸 / 图表次轴+类型 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **选题（探针先行 · 候选全做不选）**：第四十八阶段 handoff §7 六条候选清单**全部实现，不做取舍**。
+   `phase49-probe.cjs` 实测六轴：修订日期 / 合并单元格 / 工作表保护 / DOCX 图片尺寸 / PPTX 图片尺寸 /
+   图表次轴+类型 **全部为真缺口**；候选里的 **XLSX 线程批注状态实测为伪缺口**（phase4s 早已实现 `(已解决)`）→ 出局。
+   探针还**扫出两条新轴**（合并单元格、工作表保护），原候选清单里没有。
+2. **DOCX 修订日期**：`docxRevisionMarks()` 读 `w:ins` / `w:del` / `w:moveFrom` / `w:moveTo` 的 `w:date` →
+   `[修订+alice(2026-11-01T08:30:00Z): INS_BODY_TEXT]`；**无 `w:date` 保持旧口径逐字不变**。
+3. **XLSX 合并单元格**：新增 `parseXlsxMergeCells()`；`PreparedSheet` 加 `mergeLine` →
+   `[合并单元格] A1:B2 · C5:E5`（表尾，**数据校验之后、图表之前**）；`MAX_MERGE_RANGES=30`，超出报 `...(共N处)`。
+4. **XLSX 工作表保护**：`<sheetProtection>` 部件存在 → 表头 `[工作表 S1(受保护)]`，与 `(隐藏)` / `(veryHidden)` 叠加。
+5. **DOCX 图片尺寸**：新增 `emuToCm()` / `docxImageSize()`（取 `wp:docPr` **之前最近**的 `wp:extent`）→
+   `[图片: DOCX_PIC_ALT (8.89×6.67cm)]`；**读不到 extent 保持 `[图片: alt]` 原样**。
+6. **PPTX 图片尺寸**：新增 `pptxPictureSize()`（`p:pic` 内 `a:xfrm/a:ext` 的 cx/cy）→
+   `[图片: PPTX_PIC_ALT (12.7×12.7cm)]`。
+7. **图表次轴 + 类型**：`parseChartInfo()` 加 `secValAxisTitle` / `typeLabel`；新增 `CHART_PLOT_TYPES`（9 种绘制组）→
+   `[图表类型] 组合: 堆积柱形 + 折线`（多绘制组或 grouping ≠ clustered/standard 才出）；
+   `chartMarkerLines()` 坐标轴行追加 `次数值轴: 标题`（**只认 plotArea 里最后一根 valAx**）。
+
+**第四十九阶段实证发现**：
+- **openpyxl 造不出组合图**：`BarChart()+LineChart()` 抛 `Cannot combine instances of different types`
+  → 夹具只能手工向 xlsx 注入 `chart1.xml`。
+- **chart 部件必须带完整 drawing 链才出图**：worksheet `<drawing r:id>` → drawing1.xml → chart1.xml + rels + ContentTypes；
+  **只塞 chart 部件时产品零输出**（combo_min 实证）。
+- **DOCX 图片尺寸只认 `wp:extent`**：`pic:spPr/a:xfrm/a:ext` 的 cx/cy 是图形内部坐标，**不算显示尺寸**；
+  取 `wp:docPr` 之前最近的 `wp:extent`（schema 顺序 extent 先于 docPr）。
+- **EMU→cm 要去尾零**：`Number(toFixed(2))` → `12.7` / `8.89`，断言别写 `12.70`。
+- **NFKC 归一化把 `…` 变成 `...`** → 截断标记在输出里是三个 ASCII 点。
+- **openpyxl 写 mergeCell 的顺序不是升序** → 断言别假设「第 31 处是某个特定 ref」。
+- **旧套件的逐字不变断言又过期两处**：phase4m 的修订夹具**带 `w:date`**（新增日期后变红）、
+  phase4k / phase4s 的图片夹具**带 extent**（新增尺寸后变红）→ **脚本级**把新标记烘进期望字面量
+  （沿用 phase4w `[文本框]` 先例），**零产品改动**。
+- **探针第 11 次推翻候选**：XLSX 线程批注 `(已解决)` 早已实现，别按旧候选清单重做。
+
+**验证**：`phase49-selftest.cjs` **35/35**（含 6 条回归红线：无日期修订 / 无 mergeCells 表 / 无保护表 /
+读不到尺寸的图片 / 单组 clustered 图 / `phase4v/array.xlsx`+`phase4w/plainchart.xlsx` 逐字不变）；
+`phase49-e2e.cjs` **34/34**（真 Electron + MCP stdio；工具数仍 27）；全量回归 `run82-*` **三十六套全绿**
+（唯一红 phase3r B3/C3 = `host-events.ts:409` 回放 limit 上限 2000 而落盘事件已累积到 observe+approval=2031 被截断，
+**既有环境红**，run81 起即红，与本阶段无关；phase4v 机器计数显示 0/0、实际 17/17 通过 —— 该套日志行首是 `PASS: `
+而非 `[*] PASS`，机器正则漏计，run80 / run81 同样如此）。未跑真站 phase3s / phase3q（红线）。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 

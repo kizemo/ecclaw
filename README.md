@@ -1821,6 +1821,33 @@ XLSX 外部链接只给路径（**缓存值看不到**）；图表只给标题�
 - **回归红线**：无附件 PDF / 无母版文字 PPTX / 普通 DOCX / 无外部链接 XLSX / 无 dLbls 无 legend 图表 → 输出逐字不变。
 - **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
 
+### 5.53 DOCX 修订日期 / XLSX 合并单元格+工作表保护 / DOCX+PPTX 图片尺寸 / 图表次轴+类型（第四十九阶段）
+
+一次补齐六条「结构旁证」缺口（第四十八阶段 §5.52 候选清单 **全部做完，不选**）：
+修订痕迹只有作者没有日期；XLSX 的合并单元格与工作表保护完全看不到；
+DOCX / PPTX 的图片只有 alt 文字、没有显示尺寸；图表看不出是不是组合图、有没有次坐标轴。
+
+- **DOCX 修订日期**：`w:ins` / `w:del` / `w:moveFrom` / `w:moveTo` 的 `w:date` 属性 →
+  `[修订+alice(2026-11-01T08:30:00Z): INS_BODY_TEXT]`；
+  **没有 `w:date` 就保持旧口径逐字不变**（`[修订+alice: …]`，不补空括号）。
+- **XLSX 合并单元格**：`<mergeCells>` 里的 `<mergeCell ref="A1:B2">` →
+  `[合并单元格] A1:B2 · C5:E5`，排在**表尾**（数据校验之后、图表之前）；
+  超过 30 处只列前 30 处再报总数 `...(共35处)`（`MAX_MERGE_RANGES`）。
+- **XLSX 工作表保护**：`<sheetProtection>` 部件存在 → 表头标注 `[工作表 S1(受保护)]`，
+  与 `(隐藏)` / `(veryHidden)` 叠加。
+- **DOCX 图片尺寸**：取 `wp:docPr` **之前最近**的 `wp:extent`（schema 顺序 extent 先于 docPr），
+  EMU ÷ 360000 → cm，两位小数去尾零 → `[图片: DOCX_PIC_ALT (8.89×6.67cm)]`；
+  **读不到 extent 就保持 `[图片: alt]` 原样**。
+- **PPTX 图片尺寸**：`p:pic` 里 `a:xfrm/a:ext` 的 `cx` / `cy` →
+  `[图片: PPTX_PIC_ALT (12.7×12.7cm)]`；**读不到就不出尺寸**。
+- **图表次轴 + 类型**：plotArea 的**多绘制组**（组合）或单组 `grouping` 非默认（堆积 / 百分比堆积）→
+  `[图表类型] 组合: 堆积柱形 + 折线`；plotArea 里第二根 `valAx` 的标题 →
+  `[坐标轴] 类别轴: CAT_AX_T · 数值轴: MAIN_VAL_AX_T · 次数值轴: SECOND_VAL_AX_T`。
+  **单组 clustered 图不出类型行、只有一根值轴不出次轴**。
+- **回归红线**：无日期的修订 / 无 mergeCells 表 / 无保护表 / 读不到尺寸的图片 / 单组 clustered 图 →
+  输出逐字不变。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
 ---
 
 ## 6. 技能与文件库
