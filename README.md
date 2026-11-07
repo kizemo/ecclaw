@@ -1792,6 +1792,35 @@ WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
 - **回归红线**：没有域 / 外部链接 / 数组与共享公式的文档输出逐字不变。
 - **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
 
+### 5.52 PDF 附件 / PPTX 母版版式 / DOCX OLE+自定义XML+文本框 / XLSX 外链缓存 / 图表标签图例（第四十八阶段）
+
+一次补齐七条「附件与旁证」缺口（第四十七阶段 §5.51 候选清单 **全部做完，不选**）：
+PDF 只出正文（**内嵌附件看不到**）；PPTX 只出幻灯片（**母版/版式文字看不到**）；
+DOCX 只出正文（**OLE 嵌入对象 / 自定义 XML 看不到**，文本框文字虽被抽出但**没有「这是文本框」标记**）；
+XLSX 外部链接只给路径（**缓存值看不到**）；图表只给标题与系列（**数据标签/图例看不到**）。
+
+- **PDF 内嵌附件**：`getAttachments()` **只给元信息**（`rawFilename` / `filename` / `description`），
+  内容要用 `getAttachmentContent(key)` **两段式**再拉一次（key 是附件名树的名字，不是文件名）；
+  文本附件给内容（上限 2000 字符），二进制只给大小 →
+  `[附件] data.txt (47 B): ATTACHED_TEXT_CONTENT…`、`[附件] binary.bin (256 B)`；附件行排在正文之前。
+- **PPTX 母版 / 版式文本**：`slideMasters/slideMasterN.xml` 与 `slideLayouts/slideLayoutN.xml` 里的
+  `<a:t>` 文本 → `[母版] MASTER_TITLE_TEXT` / `[版式: Title Slide] LAYOUT0_TEXT`，排在 `[幻灯片 1]` 之前；
+  PowerPoint 自带提示语（`Click to edit Master text styles` / `Second level` / `‹#›` / 日期占位）过滤掉，
+  否则每个 PPTX 都刷屏。
+- **DOCX OLE 嵌入对象**：正文 `<o:OLEObject ProgID r:id>` → document rels 找 `word/embeddings/*` 部件 →
+  `[嵌入对象: Excel.Sheet.12 → oleObject1.bin (680 B)]`。
+- **DOCX 自定义 XML**：`customXml/itemN.xml` 有实内容时出 `[自定义XML] item1.xml: <probe …>`（尾部块）；
+  **空容器部件过滤**（python-docx 模板里 `customXml/item1.xml` 是空的参考文献表 `<b:Sources/>`）。
+- **DOCX 文本框标记**：`<w:txbxContent>` / `<wps:txbx>` 里的段落行尾追加 `[文本框]`
+  （文字本来就被抽出来了，本轮只补「这是文本框」的标记）。
+- **XLSX 外部链接缓存值**：外部链接部件的 `<sheetDataSet>` 里有缓存值 →
+  `[外部链接] [1] Sheet1 → https://… (缓存值: A1=100) · [2] … (缓存值: A1=200)`。
+- **图表数据标签 / 图例**：`<c:dLbls>`（openpyxl 写成**无前缀**标签，且在 **`<c:barChart>` 级**而非 chart 级或 ser 级
+  → 按**本地名 + 全深度**找）与 `<c:legend><c:legendPos>` → `[图表标签] 数据标签: 数值 · 图例: 底部`；
+  **没有 dLbls 也没有 legend 就不出这行**。
+- **回归红线**：无附件 PDF / 无母版文字 PPTX / 普通 DOCX / 无外部链接 XLSX / 无 dLbls 无 legend 图表 → 输出逐字不变。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
 ---
 
 ## 6. 技能与文件库
@@ -1989,7 +2018,14 @@ XLSX 隐藏工作表标 `[工作表 名(隐藏)]` / `[工作表 名(veryHidden)]
 **DOCX 域代码 + XLSX 公式范围 / 外部链接**（DOCX `fldChar`/`instrText`/`fldSimple` →
 `[域: 指令]`，HYPERLINK 域出 `[链接: URL]`；XLSX `<f t>`/`ref` →
 `[公式: …(数组→范围)]` / `(共享→范围)`；`<externalReferences>` →
-`[外部链接] [N] Sheet1 → 目标路径` 置顶；没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.51）。
+`[外部链接] [N] Sheet1 → 目标路径` 置顶；没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.51）、
+**PDF 附件 / PPTX 母版版式 / DOCX OLE+自定义XML+文本框 / XLSX 外链缓存 / 图表标签图例**
+（PDF `getAttachments()` + `getAttachmentContent()` 两段式 → `[附件] 名 (N B): 内容`；
+PPTX 母版/版式 `<a:t>` → `[母版] …` / `[版式: 名] …`（提示语过滤）；
+DOCX `<o:OLEObject>` → `[嵌入对象: ProgID → 部件 (N B)]`；`customXml/itemN.xml` → `[自定义XML] …`（空容器过滤）；
+文本框段落行尾 → `[文本框]`；外部链接 `<sheetDataSet>` → `(缓存值: A1=100)`；
+图表 `<c:dLbls>` / `<c:legend>` → `[图表标签] 数据标签: 数值 · 图例: 底部`；
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.52）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

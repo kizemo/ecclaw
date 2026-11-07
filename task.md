@@ -338,6 +338,7 @@
 > 全量回归 `run78-*`（唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与 phase4t 无关）。
 > 交接见 `handoff-ecclaw-phase4t-final-2026-11-07.md`。
 
+> **第四十八阶段（PDF 内嵌附件 / PPTX 母版版式文本 / DOCX OLE 嵌入对象 + 自定义 XML + 文本框标记 / XLSX 外部链接缓存值 / 图表数据标签与图例）已完成并真机验证（自测 **33/33** + e2e **34/34**；全量回归 **run81** 三十五套全绿，唯一红 phase3r B3/C3 为回放上限 2000 的既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase4w-final-2026-11-07.md`。**
 > **第四十七阶段（DOCX 域代码 + XLSX 公式范围 / 外部链接）已完成并真机验证（自测 **20/20** + e2e **17/17**；全量回归 **run80** 三十四套，唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase4v-final-2026-11-07.md`。**
 > **第四十六阶段（图表深度：坐标轴标题 / 类别 / 数值 + XLSX 隐藏表标记）已完成并真机验证（`phase4u-e2e.cjs` **43/43** 全绿 + 自测 **27/27**）**：
 > 第四十五阶段的图表标记只有「标题 + 系列名」，**坐标轴标题与全部数值仍然看不到** →
@@ -826,6 +827,53 @@ phase3u 的 A4 是**上一轮自己留下的 `current.json` 指针**（套件 E0
 harness 机器计数漏计）、phase4m 改两条旧格式断言后补跑 **50/50**、graytest `current.json`
 指针复位 1.0.0 后 phase3u 补跑 **24/24**（两者均脚本级修复、零产品改动）；
 唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。未跑真站 phase3s / phase3q（红线）。
+
+## 第四十八阶段（2026-11-07）：PDF 附件 / PPTX 母版版式 / DOCX OLE+自定义XML+文本框 / XLSX 外链缓存 / 图表标签图例 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **选题（探针先行 · 候选全做不选）**：第四十七阶段 handoff §5 六条候选清单**全部实现，不做取舍**。
+   `phase4w-probe.cjs` 实测六条缺口**全部为真**（PDF 附件 / PPTX 母版版式 / DOCX OLE / DOCX 自定义 XML /
+   XLSX 外链缓存值 / 图表标签图例），DOCX 文本框一轴实测为「内容早已抽出、只缺标记」→ 只补标记。
+2. **PDF 内嵌附件**：新增 `pdfAttachmentLines()` / `attachmentText()`；`PdfDocument` 接口加
+   `getAttachments?()` / `getAttachmentContent?()`；**两段式**取字节（`getAttachments()` 只给元信息）；
+   文本附件给内容、二进制只给大小 → `[附件] data.txt (47 B): ATTACHED_TEXT_CONTENT…`；
+   `MAX_PDF_ATTACHMENTS=20` / `MAX_ATTACHMENT_CHARS=2000`；附件行排在正文之前。
+3. **PPTX 母版 / 版式文本**：新增 `pptxTemplateText()` / `pptxTemplateNoise()` / `pptxTemplateLines()`；
+   `PptxParts` 加 `masters` / `layouts`；→ `[母版] MASTER_TITLE_TEXT` / `[版式: Title Slide] LAYOUT0_TEXT`，
+   排在 `[幻灯片 1]` 之前。
+4. **DOCX OLE 嵌入对象**：新增 `docxOleObjects()` / `docxOleMarks()`；`DocxParts` 加 `embeddings`、
+   `DocxRenderCtx` 加 `oleObjects`；→ `[嵌入对象: Excel.Sheet.12 → oleObject1.bin (680 B)]`；
+   `MAX_DOCX_EMBEDDINGS=20`。
+5. **DOCX 自定义 XML**：新增 `customXmlHasContent()`；`DocxParts` 加 `customXml`；
+   → `[自定义XML] item1.xml: <probe …>`（尾部块，空容器部件过滤）；`MAX_CUSTOM_XML_CHARS=400`。
+6. **DOCX 文本框标记**：`docxExtras()` 内判 `<w:txbxContent` / `<wps:txbx>` → 段落行尾追加 `[文本框]`。
+7. **XLSX 外部链接缓存值**：新增 `xlsxExtLinkCached()`，挂在 `parseXlsxExternalLinks()` 每条链接后 →
+   `[外部链接] [1] Sheet1 → https://… (缓存值: A1=100) · [2] … (缓存值: A1=200)`；`MAX_EXT_LINK_CACHE=20`。
+8. **图表数据标签 / 图例**：`parseChartInfo()` 加 `hasDataLabels` / `dataLabels` / `hasLegend` / `legendPos`；
+   新增 `CHART_LABEL_FLAGS` / `isXmlOn()` / `chartLegendPosLabel()` → `[图表标签] 数据标签: 数值 · 图例: 底部`；
+   **没有 dLbls 也没有 legend 就不出这行**。
+
+**第四十八阶段实证发现**：
+- **pdfjs 的 `getAttachments()` 只给元信息**（`rawFilename` / `filename` / `description`），**没有 content**；
+  内容要再调 `getAttachmentContent(key)`（key = 附件名树的名字，不是文件名）→ 第一版按 `item.content` 读，
+  出来的全是 0 B，改成两段式才对。
+- **母版里混着 PowerPoint 提示语**（`Click to edit Master text styles` / `Second level` / `‹#›` / 日期占位），
+  不过滤的话每个 PPTX 都刷屏。
+- **python-docx 模板里的 `customXml/item1.xml` 是空的参考文献表**（`<b:Sources …/>`）→
+  自定义 XML 必须过滤空容器（元素标签数 ≤ 1），否则每个 DOCX 都冒一行假标记。
+- **图表 `dLbls` 在 `<c:barChart>` 级**（不是 chart 级、也不是 ser 级），且 openpyxl 写成**无前缀**标签
+  → 解析必须按**本地名 + 全深度**找。
+- **文本框文字本来就被抽出来了**，缺的只是「这是文本框」的标记 —— 探针又一次推翻「看似缺口」的直觉。
+- **夹具坑**：Windows 上 `os.replace` 偶发 `PermissionError`（文件锁）→ 生成脚本加 20 次重试。
+
+**验证**：`phase4w-selftest.cjs` **33/33**（含 6 条回归红线：无附件 PDF / 无母版文字 PPTX / 普通 DOCX /
+无外部链接 XLSX / 无 dLbls 无 legend 图表）；`phase4w-e2e.cjs` **34/34**（真 Electron + MCP stdio；
+工具数仍 27）；全量回归 `run81-*` **三十五套**：phase4w 34/34、phase4u **43/43**、phase4t **30/30**
+（两者为**补跑** —— `b1-textbox.docx` 的「原文逐字不变」红线因新增 `[文本框]` 标记而过期，
+脚本级更新断言、**零产品改动**）；唯一红 phase3r B3/C3 是 `host-events.ts` 回放 limit 上限 2000
+而落盘事件已累积到 observe+approval=2031 被截断（run80 时尚未越线），与本阶段无关。
+未跑真站 phase3s / phase3q（红线）。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 
