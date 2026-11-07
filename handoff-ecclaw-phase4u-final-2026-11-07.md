@@ -2,7 +2,7 @@
 
 > 承接：`handoff-ecclaw-phase4u-wip-2026-11-07.md`（本轮中途被 ctx 闸门拦下时写的 WIP，已被本篇取代）。
 > 上一阶段：`handoff-ecclaw-phase4t-final-2026-11-07.md`。
-> 本轮状态：**代码 + 文档 + 记忆 + 提交全部完成**。
+> 本轮状态：**代码 + 文档 + 记忆 + 提交 + 推送 GitHub 全部完成**（第四十六阶段收官）。
 
 ---
 
@@ -143,7 +143,10 @@
 
 - `feat(document-preview): 图表深度（轴标题/类别/数值）+ XLSX 隐藏表标记` —— `1b23344`
   （产品代码 `electron/main/document-preview.ts`）。
-- `docs: 记录第四十六阶段并回填提交 hash` —— README / task.md / handoff / prompt。
+- `docs: 记录第四十六阶段并回填提交 hash` —— `2427850`（README / task.md / handoff / prompt）。
+- `chore: 合并 GitHub 初始提交` —— `eacc345`（远端建仓时带的 2 行 README 桩与本地 2000 行完整 README
+  属**无共同祖先的两条历史**，用 `merge --allow-unrelated-histories` 合流，README 冲突保留本地版）。
+- 推送：remote `origin` = `https://github.com/kizemo/ecclaw.git`（本轮首次配置），`git push -u origin main`。
 
 ---
 

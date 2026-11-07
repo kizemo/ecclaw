@@ -1,16 +1,3 @@
-# prompt · ecclaw phase4u 后续接力
+# prompt · ecclaw 第四十七阶段接力
 
-承接：`handoff-ecclaw-phase4u-final-2026-11-07.md`（同目录，先读它；基线、候选清单、禁止事项一律以它为准）。
-
-本轮状态：第四十六阶段（图表深度 + XLSX 隐藏表标记）**已收官并提交**。
-自测 27/27、e2e 43/43、全量回归 `run79-*` 32 套（唯一失败 phase3r C3 = 事件库 >2000 条既有环境失败）。
-
-变化点（相对 phase4t 的 handoff / prompt）：
-
-1. **候选清单第 11 次过期** —— phase4t §7 清单已复验并更新（见 final handoff §6）。
-   「DOCX 页眉页脚」早已支持，别做；「图表轴标题 / 类别 / 数值」「XLSX 隐藏表」本轮已做。
-2. **文档预览输出格式变了**：图表从单行 `[图表: 标题 · 系列]` 改多行块。
-   phase4t 自测 / e2e 的图表断言本轮已改；**下轮若再动图表输出，同样要连带改旧套件断言**。
-3. **回归前置**：8898 + 8897 两个 fixture server 都要起着，否则成片红。
-4. 下一轮候选建议排序：DOCX 域代码 → XLSX 数组公式溢出范围 → XLSX 外部链接目标。
-   （仍照例：先探针复验 + 扫新轴，再逐项确认设计，只改一个文件。）
+新会话请通读 `F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase4u-final-2026-11-07.md` 全文（背景 / 进度 / §6 下阶段候选清单 / §7 环境基线 / §8 避坑 / §10 必读顺序均已含全路径，项目总览在 `F:\soft\00selfmade\ecclaw\README.md` 与 `F:\soft\00selfmade\ecclaw\task.md`），按其 §6 先探针复验 + 扫新轴再逐项确认设计，只改 `F:\soft\00selfmade\ecclaw\electron\main\document-preview.ts`——本 prompt 不重复 handoff 任何内容。
