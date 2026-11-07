@@ -1000,7 +1000,59 @@ function docxRevisionMarks(paragraph: string): string[] {
   return out
 }
 
-/** 段落末尾附加的修订 / 链接 / 批注（含回复）/ 图表标记（没有就返回空串） */
+/** 域指令输出上限（超长截断，避免撑爆一行） */
+const MAX_FIELD_INSTR = 80
+
+/**
+ * 段落里的域代码标记（按文档顺序）。
+ *
+ * - 复合域 `<w:fldChar begin/separate/end>` + `<w:instrText>`：栈式配对支持嵌套；
+ *   指令在 separate 时即出（TOC 这类域的 end 落在后面段落，等 end 永远出不来），
+ *   没有 separate 的域在 end 出；
+ * - 简单域 `<w:fldSimple w:instr="…">`：直接取 instr；
+ * - HYPERLINK 域：对齐 w:hyperlink 口径出 `[链接: URL]`（URL 取指令里第一个带引号段）；
+ * - 其余出 `[域: 指令]`；指令折叠空白、超 MAX_FIELD_INSTR 截断。
+ */
+function docxFieldMarks(paragraph: string): string[] {
+  const out: string[] = []
+  const emit = (raw: string): void => {
+    const instr = decodeXmlEntities(raw).replace(/\s+/g, ' ').trim()
+    if (!instr) return
+    if (instr.split(' ')[0].toUpperCase() === 'HYPERLINK') {
+      const url = /"([^"]*)"/.exec(instr)?.[1] ?? ''
+      out.push(url ? `[链接: ${url}]` : `[域: ${instr}]`)
+      return
+    }
+    out.push(`[域: ${instr.length > MAX_FIELD_INSTR ? instr.slice(0, MAX_FIELD_INSTR) + '...' : instr}]`)
+  }
+  const re =
+    /<w:fldChar\b[^>]*\bw:fldCharType="(\w+)"[^>]*\/?>|<w:instrText(?:\s[^>]*)?>([\s\S]*?)<\/w:instrText>|<w:fldSimple\b([^>]*?)(?:\/>|>([\s\S]*?)<\/w:fldSimple>)/g
+  const stack: Array<{ instr: string; emitted: boolean }> = []
+  for (const m of paragraph.matchAll(re)) {
+    if (m[1] !== undefined) {
+      const top = stack.length > 0 ? stack[stack.length - 1] : null
+      if (m[1] === 'begin') stack.push({ instr: '', emitted: false })
+      else if (m[1] === 'separate' && top) {
+        if (!top.emitted && top.instr.trim()) {
+          emit(top.instr)
+          top.emitted = true
+        }
+      } else if (m[1] === 'end' && top) {
+        if (!top.emitted && top.instr.trim()) emit(top.instr)
+        stack.pop()
+      }
+    } else if (m[2] !== undefined) {
+      const top = stack.length > 0 ? stack[stack.length - 1] : null
+      if (top && !top.emitted) top.instr += m[2]
+    } else if (m[3] !== undefined) {
+      const instr = /\bw:instr="([^"]*)"/.exec(m[3] ?? '')?.[1]
+      if (instr) emit(instr)
+    }
+  }
+  return out
+}
+
+/** 段落末尾附加的修订 / 链接 / 批注（含回复）/ 域代码标记（没有就返回空串） */
 function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
   const parts: string[] = docxRevisionMarks(paragraph)
   for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
@@ -1015,6 +1067,7 @@ function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
       if (r) parts.push(`[回复(${r.author}): ${r.text}]`)
     }
   }
+  for (const mark of docxFieldMarks(paragraph)) parts.push(mark)
   return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
 
@@ -1675,6 +1728,10 @@ const XLSX_DRAWING_RELS_RE = /^xl\/drawings\/_rels\/drawing\d*\.xml\.rels$/
 /** 数据透视表部件（xl/pivotTables/pivotTableN.xml） */
 const XLSX_PIVOT_RE = /^xl\/pivotTables\/pivotTable\d*\.xml$/
 const XLSX_PERSONS_ENTRY = 'xl/persons/person.xml'
+/** 外部链接部件（xl/externalLinks/externalLinkN.xml） */
+const XLSX_EXT_LINK_RE = /^xl\/externalLinks\/externalLink\d*\.xml$/
+/** 外部链接部件的关系（目标文件路径在这里） */
+const XLSX_EXT_LINK_RELS_RE = /^xl\/externalLinks\/_rels\/externalLink\d*\.xml\.rels$/
 
 /** 解码 zip 条目为 UTF-8 文本 */
 function decodeEntry(entry: Uint8Array | undefined): string {
@@ -4073,6 +4130,10 @@ function parseXlsxSheet(
     fill: string | null
     /** 单元格公式体（共享公式的 follower 已回填 master 的公式体） */
     formula: string
+    /** `<f t="…">`：array / shared（普通公式为空） */
+    formulaKind: string
+    /** `<f ref="…">`：数组公式溢出范围 / 共享公式归属范围 */
+    formulaRef: string
     /** 公式的 si（共享公式分组号） */
     formulaSi: string
     /** 本格是共享公式的 follower（公式体继承自 master） */
@@ -4157,6 +4218,8 @@ function parseXlsxSheet(
         fill: null,
         formula: fBody.trim() === '' ? '' : decodeXmlEntities(fBody).trim(),
         formulaSi: /\bsi="(\d+)"/.exec(fEl?.[1] ?? '')?.[1] ?? '',
+        formulaKind: /\bt="([^"]*)"/.exec(fEl?.[1] ?? '')?.[1] ?? '',
+        formulaRef: /\bref="([^"]*)"/.exec(fEl?.[1] ?? '')?.[1] ?? '',
         sharedFollower: false
       }
       cells.push(cell)
@@ -4210,7 +4273,14 @@ function parseXlsxSheet(
       // 顺序：值 → 公式 → 链接 / 批注 → 颜色标记（颜色恒在最末）
       const markers: string[] = []
       if (c.formula !== '') {
-        markers.push(`[公式: ${c.sharedFollower ? `共享 ${c.formula}` : c.formula}]`)
+        // t="array" 带溢出范围、t="shared" 的 master 带归属范围 → 标注出来（follower 没有 ref，维持旧输出）
+        const rangeTail =
+          c.formulaKind === 'array'
+            ? `(数组${c.formulaRef ? `→${c.formulaRef}` : ''})`
+            : c.formulaKind === 'shared' && c.formulaRef
+              ? `(共享→${c.formulaRef})`
+              : ''
+        markers.push(`[公式: ${c.sharedFollower ? `共享 ${c.formula}` : c.formula}${rangeTail}]`)
       }
       if (extra) markers.push(extra)
       const text = [c.value, ...markers].filter((s) => s !== '').join(' ')
@@ -4272,6 +4342,45 @@ function xlsxSheetGraphics(
   return out
 }
 
+/**
+ * 工作簿外部链接表：`<externalReferences>` 里的**次序**就是公式里 `[1] [2] …` 的编号。
+ * 逐条走：reference 的 r:id → workbook rels 找部件 → 部件里的 sheetNames →
+ * 部件自己的 rels 里 externalLinkPath 的 Target（完整路径 / URL）。
+ * 输出 `[外部链接] [1] Sheet1 → 路径 · [2] …`；部件或路径解析不出就跳过该条（不猜）。
+ */
+function parseXlsxExternalLinks(
+  workbook: string,
+  rels: Map<string, string>,
+  entries: Record<string, Uint8Array>
+): string {
+  const items: string[] = []
+  let idx = 0
+  for (const m of workbook.matchAll(/<(?:[\w.-]+:)?externalReference\b([^>]*?)\/?>/g)) {
+    idx++
+    const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
+    const target = rid ? rels.get(rid) : undefined
+    if (!target || isExternalTarget(target)) continue
+    const partPath = resolveRelTarget('xl', target)
+    const xml = decodeEntry(entries[partPath]) ?? ''
+    if (!xml) continue
+    const sheetNames: string[] = []
+    for (const s of xml.matchAll(/<(?:[\w.-]+:)?sheetName\b[^>]*?\bval="([^"]*)"/g)) {
+      sheetNames.push(decodeXmlEntities(s[1] ?? ''))
+    }
+    const relsPath = partPath.replace(/([^/]+)$/, '_rels/$1.rels')
+    let path = ''
+    for (const e of parseRelEntries(decodeEntry(entries[relsPath]) ?? '')) {
+      if (e.type.endsWith('/externalLinkPath')) {
+        path = decodeXmlEntities(e.target)
+        break
+      }
+    }
+    if (!path) continue
+    items.push(`[${idx}]${sheetNames.length > 0 ? ` ${sheetNames.join(', ')}` : ''} → ${path}`)
+  }
+  return items.length > 0 ? `[外部链接] ${items.join(' · ')}` : ''
+}
+
 export function extractXlsxText(filePath: string): string {
   const entries = readZipEntries(
     filePath,
@@ -4289,6 +4398,8 @@ export function extractXlsxText(filePath: string): string {
       XLSX_DRAWING_RE.test(n) ||
       XLSX_DRAWING_RELS_RE.test(n) ||
       XLSX_PIVOT_RE.test(n) ||
+      XLSX_EXT_LINK_RE.test(n) ||
+      XLSX_EXT_LINK_RELS_RE.test(n) ||
       n === XLSX_PERSONS_ENTRY ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
@@ -4327,6 +4438,7 @@ export function extractXlsxText(filePath: string): string {
     decodeEntry(entries[DOC_CUSTOM_PROPS_ENTRY])
   ).join('\n')
   const definedLine = parseXlsxDefinedNames(workbook, sheets.map((s) => s.name))
+  const extLinkLine = parseXlsxExternalLinks(workbook, rels, entries)
   const persons = parseXlsxPersons(decodeEntry(entries[XLSX_PERSONS_ENTRY]))
   const blocks: string[] = []
   // 先把每个工作表解析完再出块：图表系列名可能要回查别的表的单元格（strRef 没缓存值时）
@@ -4429,7 +4541,7 @@ export function extractXlsxText(filePath: string): string {
     blocks.push(`[工作表 ${p.name}${stateMark}]\n${p.tableLine}${p.rows.join('\n')}${tail}${graphicTail}`)
   }
   const body = normalizeText(blocks.join('\n\n'))
-  const top = [meta, definedLine].filter((s) => s !== '').join('\n')
+  const top = [meta, definedLine, extLinkLine].filter((s) => s !== '').join('\n')
   return top ? `${top}\n${body}` : body
 }
 
