@@ -70,7 +70,8 @@ phase4v §5 的六条候选**全部实现**（另加一条文本框标记），�
 
 ## 6. 环境基线
 
-- 分支 main，HEAD = `3efb790`（第四十七阶段 docs 提交）。本轮改动在提交前都未 commit。
+- 分支 main：本轮已提交 `026fe21`（feat document-preview.ts）+ `d6c675d`（docs 收口），已 push 至
+  `https://github.com/kizemo/ecclaw.git` origin/main。接力新会话请先 `git pull` 核对本仓最新。
 - 夹具站：8898（fixture-server.cjs）+ 8897（fixture-writer.cjs），**回归前两个都要起**。
 - Electron：`npx electron . --remote-debugging-port=9222`（改完主进程必须重启，否则 e2e 跑的是旧代码）。
 
