@@ -759,6 +759,28 @@ function docxImageAlt(attrs: string): string {
   return pick('descr') || pick('title')
 }
 
+/** EMU → cm 文本（两位小数、去尾零）；读不出返回空串 */
+function emuToCm(emu: number): string {
+  if (!Number.isFinite(emu) || emu <= 0) return ''
+  return String(Number((emu / 360000).toFixed(2)))
+}
+
+/**
+ * 图片显示尺寸：取 docPr **之前**最近的 wp:extent（schema 顺序 extent 先于 docPr）。
+ * 读不到（老式 v:imagedata 等）→ 空串，输出与旧口径逐字一致。
+ */
+function docxImageSize(runBody: string, docPrIndex: number): string {
+  let last: RegExpExecArray | null = null
+  for (const m of runBody.matchAll(/<(?:[\w.-]+:)?extent\b[^>]*?\bcx="(\d+)"[^>]*?\bcy="(\d+)"/g)) {
+    if ((m.index ?? 0) < docPrIndex) last = m
+    else break
+  }
+  if (!last) return ''
+  const w = emuToCm(Number(last[1]))
+  const h = emuToCm(Number(last[2]))
+  return w && h ? ` (${w}×${h}cm)` : ''
+}
+
 /** 段落里的 run（按文档顺序）：文本 + 粗体/斜体标记 + 脚注/尾注引用角标 + 图片替代文字 */
 function docxRuns(
   paragraph: string,
@@ -792,7 +814,7 @@ function docxRuns(
           const m = /<(?:[\w.-]+:)?cNvPr\b([^>]*)>/.exec(body)
           if (m) alt = decodeXmlEntities(/\bdescr="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? '').trim()
         }
-        if (alt) text += `[图片: ${alt}]`
+        if (alt) text += `[图片: ${alt}${docxImageSize(body, t.index ?? 0)}]`
       }
     }
     runs.push({ text, bold, italic })
@@ -1022,10 +1044,11 @@ function docxRevisionMarks(paragraph: string): string[] {
     const body = m[4] ?? ''
     if (!body) continue
     const author = /\bw:author="([^"]*)"/.exec(m[2] ?? '')?.[1] ?? ''
+    const date = /\bw:date="([^"]*)"/.exec(m[2] ?? '')?.[1] ?? ''
     const inserted = tag === 'ins' || tag === 'moveTo'
     const text = inserted ? docxParagraphText(body) : docxDeletedText(body)
     if (!text) continue
-    out.push(`[修订${inserted ? '+' : '-'}${author}: ${text}]`)
+    out.push(`[修订${inserted ? '+' : '-'}${author}${date ? `(${date})` : ''}: ${text}]`)
   }
   return out
 }
@@ -1574,7 +1597,24 @@ interface ChartInfo {
   hasLegend: boolean
   /** 图例位置（b/t/l/r/tr；空串 = 位置没写） */
   legendPos: string
+  /** 次数值轴标题（plotArea 里有第二根 valAx 才可能有） */
+  secValAxisTitle: string
+  /** 图表类型修饰（堆积 / 百分比堆积 / 组合；单组默认类型 = 空串，不出标记） */
+  typeLabel: string
 }
+
+/** 绘制组标签 → 中文类型名（plotArea 的直接子级；出现多组 = 组合图） */
+const CHART_PLOT_TYPES: Array<[string, string]> = [
+  ['barChart', '柱形'],
+  ['lineChart', '折线'],
+  ['areaChart', '面积'],
+  ['pieChart', '饼'],
+  ['doughnutChart', '环形'],
+  ['scatterChart', '散点'],
+  ['bubbleChart', '气泡'],
+  ['radarChart', '雷达'],
+  ['stockChart', '股价']
+]
 
 /** 图表数据标签的开关项（XML 标签 → 中文说法） */
 const CHART_LABEL_FLAGS: Array<[string, string]> = [
@@ -1635,7 +1675,9 @@ function parseChartInfo(
     hasDataLabels: false,
     dataLabels: [],
     hasLegend: false,
-    legendPos: ''
+    legendPos: '',
+    secValAxisTitle: '',
+    typeLabel: ''
   }
   if (!xml) return info
   const chartEl = xmlElements(xml, 'chart')[0]
@@ -1697,15 +1739,34 @@ function parseChartInfo(
   // 坐标轴标题：类别轴（c:catAx）与数值轴（c:valAx），都在 c:plotArea 里
   const plotArea = xmlElements(body, 'plotArea')[0]
   if (plotArea) {
-    const catAx = xmlElements(plotArea.body, 'catAx')[0]
-    const valAx = xmlElements(plotArea.body, 'valAx')[0]
-    if (catAx) {
-      const t = xmlElements(catAx.body, 'title')[0]
-      if (t) info.catAxisTitle = titleText(t.body)
+    const axTitleOf = (ax: { body: string }): string => {
+      const t = xmlElements(ax.body, 'title')[0]
+      return t ? titleText(t.body) : ''
     }
-    if (valAx) {
-      const t = xmlElements(valAx.body, 'title')[0]
-      if (t) info.valAxisTitle = titleText(t.body)
+    const catAx = xmlElements(plotArea.body, 'catAx')[0]
+    if (catAx) info.catAxisTitle = axTitleOf(catAx)
+    // 数值轴可能有两条（组合图次轴）：XML 顺序里第一根是主轴，最后一根是次轴
+    const valAxs = xmlElements(plotArea.body, 'valAx')
+    if (valAxs.length > 0) info.valAxisTitle = axTitleOf(valAxs[0])
+    if (valAxs.length > 1) info.secValAxisTitle = axTitleOf(valAxs[valAxs.length - 1])
+    // 绘制组：多组 = 组合图；单组且 grouping 非默认（堆积/百分比堆积）也出类型修饰
+    const groups: Array<{ label: string; grouping: string }> = []
+    for (const [tag, label] of CHART_PLOT_TYPES) {
+      for (const g of xmlElements(plotArea.body, tag)) {
+        const mod = /\bval="([^"]*)"/.exec(xmlElements(g.body, 'grouping')[0]?.open ?? '')?.[1] ?? ''
+        groups.push({ label, grouping: mod })
+      }
+    }
+    if (groups.length > 0) {
+      const descs = groups.map((g) =>
+        g.grouping === 'stacked'
+          ? `堆积${g.label}`
+          : g.grouping === 'percentStacked'
+            ? `百分比堆积${g.label}`
+            : g.label
+      )
+      if (groups.length > 1) info.typeLabel = `组合: ${descs.join(' + ')}`
+      else if (descs[0] !== groups[0].label) info.typeLabel = descs[0]
     }
   }
   // 数据标签（c:dLbls）：图表类型级（c:barChart 里）或系列级都认；<c:delete val="1"/> 表示删掉了
@@ -1766,9 +1827,11 @@ function chartMarkerLines(
   const info = parseChartInfo(xml, resolveFormula, resolveRange)
   if (!info.title && info.seriesData.length === 0) return []
   const lines: string[] = [info.title ? `[图表: ${info.title}]` : '[图表]']
+  if (info.typeLabel) lines.push(`[图表类型] ${info.typeLabel}`)
   const axes: string[] = []
   if (info.catAxisTitle) axes.push(`类别轴: ${info.catAxisTitle}`)
   if (info.valAxisTitle) axes.push(`数值轴: ${info.valAxisTitle}`)
+  if (info.secValAxisTitle) axes.push(`次数值轴: ${info.secValAxisTitle}`)
   if (axes.length > 0) lines.push(`[坐标轴] ${axes.join(' · ')}`)
   // 数据标签 / 图例开关（图表部件里没有这两样就不出这行）
   const switches: string[] = []
@@ -2052,6 +2115,15 @@ function pptxPictureAlt(picXml: string): string {
   const nv = /<p:nvPicPr(?:\s[^>]*)?>[\s\S]*?<\/p:nvPicPr>/.exec(picXml)?.[0] ?? picXml
   const descr = /\bdescr="([^"]*)"/.exec(nv)?.[1] ?? ''
   return decodeXmlEntities(descr).trim()
+}
+
+/** 图片显示尺寸：p:pic 里 a:ext 的 cx/cy（EMU→cm）；读不到 → 空串（旧口径逐字不变） */
+function pptxPictureSize(picXml: string): string {
+  const m = /<(?:[\w.-]+:)?ext\b[^>]*?\bcx="(\d+)"[^>]*?\bcy="(\d+)"/.exec(picXml)
+  if (!m) return ''
+  const w = emuToCm(Number(m[1]))
+  const h = emuToCm(Number(m[2]))
+  return w && h ? ` (${w}×${h}cm)` : ''
 }
 
 /* ---------------------- PPTX 链接 / 批注 ---------------------- */
@@ -2355,7 +2427,7 @@ function pptxTreeBlocks(treeXml: string, ctx: PptxRenderCtx): string[] {
       blocks.push(...graphicRefMarks(child.body, ctx.graphics))
     } else {
       const alt = pptxPictureAlt(child.body)
-      if (alt) blocks.push(`[图片: ${alt}]`)
+      if (alt) blocks.push(`[图片: ${alt}${pptxPictureSize(child.body)}]`)
     }
     if (child.tag === 'p:graphicFrame') continue
     const marks = pptxShapeLinkMarks(child.body, ctx.links)
@@ -4636,6 +4708,20 @@ function xlsxExtLinkCached(xml: string): string {
   return items.join(', ')
 }
 
+/** 合并单元格区域上报上限（超出只报总数） */
+const MAX_MERGE_RANGES = 30
+
+/** 合并单元格（mergeCell ref）→ `[合并单元格] A1:B2 · C5:E5`；没有部件 → 空串 */
+function parseXlsxMergeCells(sheetXml: string): string {
+  const refs: string[] = []
+  for (const m of sheetXml.matchAll(/<(?:[\w.-]+:)?mergeCell\b[^>]*?\bref="([^"]*)"/g)) {
+    if (m[1]) refs.push(m[1])
+  }
+  if (refs.length === 0) return ''
+  const shown = refs.slice(0, MAX_MERGE_RANGES).join(' · ')
+  return `[合并单元格] ${shown}${refs.length > MAX_MERGE_RANGES ? ` …(共${refs.length}处)` : ''}`
+}
+
 export function extractXlsxText(filePath: string): string {
   const entries = readZipEntries(
     filePath,
@@ -4705,6 +4791,9 @@ export function extractXlsxText(filePath: string): string {
     rows: string[]
     tableLine: string
     dvLine: string
+    mergeLine: string
+    /** 工作表保护标记：sheetProtection 部件存在 → (受保护) */
+    protectedMark: string
     cellMap: Map<string, string>
   }
   const prepared: PreparedSheet[] = []
@@ -4756,6 +4845,8 @@ export function extractXlsxText(filePath: string): string {
       rows,
       tableLine: tableFrags.length > 0 ? `[表格] ${tableFrags.join(' · ')}\n` : '',
       dvLine: parseXlsxDataValidations(sheetXml),
+      mergeLine: parseXlsxMergeCells(sheetXml),
+      protectedMark: /<(?:[\w.-]+:)?sheetProtection\b/.test(sheetXml) ? '(受保护)' : '',
       cellMap
     })
   }
@@ -4782,7 +4873,8 @@ export function extractXlsxText(filePath: string): string {
   }
   for (const p of prepared) {
     if (p.rows.length === 0) continue
-    const tail = p.dvLine ? `\n${p.dvLine}` : ''
+    const tailLines = [p.dvLine, p.mergeLine].filter((s) => s !== '')
+    const tail = tailLines.length > 0 ? `\n${tailLines.join('\n')}` : ''
     // 图表与数据透视表：挂在所属工作表末尾
     const graphicLines = xlsxSheetGraphics(
       p.sheetXml,
@@ -4792,7 +4884,9 @@ export function extractXlsxText(filePath: string): string {
       resolveChartRange
     )
     const graphicTail = graphicLines.length > 0 ? `\n${graphicLines.join('\n')}` : ''
-    const stateMark = p.state === 'hidden' ? '(隐藏)' : p.state === 'veryHidden' ? '(veryHidden)' : ''
+    const stateMark =
+      (p.state === 'hidden' ? '(隐藏)' : p.state === 'veryHidden' ? '(veryHidden)' : '') +
+      p.protectedMark
     blocks.push(`[工作表 ${p.name}${stateMark}]\n${p.tableLine}${p.rows.join('\n')}${tail}${graphicTail}`)
   }
   const body = normalizeText(blocks.join('\n\n'))
