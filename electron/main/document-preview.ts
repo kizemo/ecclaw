@@ -252,6 +252,12 @@ interface PdfDocument {
   getPageIndex?(ref: unknown): Promise<number>
   /** 文档元数据（Info 字典）；pdfjs 有 → 可选 + 运行时兜底 */
   getMetadata?(): Promise<{ info?: Record<string, unknown> }>
+  /** 内嵌附件（catalog 的 /Names /EmbeddedFiles）；pdfjs 有 → 可选 + 运行时兜底 */
+  getAttachments?(): Promise<
+    Map<string, { filename?: string; rawFilename?: string; description?: string }> | null
+  >
+  /** 内嵌附件的字节内容（pdfjs 是按需拉的，getAttachments 只给元信息） */
+  getAttachmentContent?(id: string): Promise<Uint8Array | null>
 }
 interface PdfjsModule {
   getDocument(opts: unknown): { promise: Promise<PdfDocument> }
@@ -373,6 +379,14 @@ const DOCX_COMMENTS_EXTENDED_ENTRY = 'word/commentsExtended.xml'
 const DOCX_CHART_RE = /^word\/charts\/chart\d*\.xml$/
 /** SmartArt 数据部件（word/diagrams/dataN.xml） */
 const DOCX_DIAGRAM_RE = /^word\/diagrams\/data\d*\.xml$/
+/** OLE 嵌入对象部件（word/embeddings/*：Excel / Word / PDF 之类） */
+const DOCX_EMBEDDING_RE = /^word\/embeddings\/[^/]+$/
+/** 自定义 XML 数据部件（customXml/itemN.xml；itemProps 只是元数据，不算） */
+const DOCX_CUSTOM_XML_RE = /^customXml\/item\d*\.xml$/
+/** 最多读几个 OLE 嵌入对象（防大文件里塞一堆） */
+const MAX_DOCX_EMBEDDINGS = 20
+/** 自定义 XML 正文最多显示多少字符 */
+const MAX_CUSTOM_XML_CHARS = 400
 
 /** OOXML 三兄弟共用的文档属性部件（DOCX / XLSX / PPTX 位置相同） */
 const DOC_CORE_PROPS_ENTRY = 'docProps/core.xml'
@@ -502,6 +516,10 @@ interface DocxParts {
   commentsExtended: string
   /** 图形部件（图表 / SmartArt）：zip 内路径 → xml */
   graphics: Record<string, string>
+  /** OLE 嵌入对象部件：zip 内路径 → 字节数（读不出大小就没有这条） */
+  embeddings: Record<string, number>
+  /** 自定义 XML 数据部件：部件名 → xml 原文 */
+  customXml: Array<{ name: string; xml: string }>
   coreProps: string
   appProps: string
   customProps: string
@@ -509,6 +527,16 @@ interface DocxParts {
 
 /** 缩进哨兵：归一化会把连续空格压成一个，所以先用哨兵占位，最后再还原成空格 */
 const DOCX_INDENT = '\u0000'
+
+/**
+ * 自定义 XML 部件里有没有实际数据。
+ * 空容器（比如 Word 模板里那个空的参考文献表 `<b:Sources …/>`）不算内容 → 不出标记。
+ */
+function customXmlHasContent(xml: string): boolean {
+  const body = xml.replace(/<\?xml[^>]*\?>/i, '').trim()
+  const tags = body.match(/<[A-Za-z_][\w.:-]*[\s>/]/g)
+  return (tags?.length ?? 0) > 1
+}
 
 interface DocxStyleInfo {
   name: string
@@ -812,6 +840,8 @@ interface DocxRenderCtx {
   commentReplyIds: Set<string>
   /** r:id → 图表 / SmartArt 标记行（如 `[图表: …]`、`[图表系列] …`） */
   graphics: Map<string, string[]>
+  /** r:id → OLE 嵌入对象（部件名 / 字节数；ProgID 在正文标签上） */
+  oleObjects: Map<string, { name: string; size: number | null }>
 }
 
 /**
@@ -1052,7 +1082,42 @@ function docxFieldMarks(paragraph: string): string[] {
   return out
 }
 
-/** 段落末尾附加的修订 / 链接 / 批注（含回复）/ 域代码标记（没有就返回空串） */
+/**
+ * 正文 rels 里的 OLE 嵌入对象：r:id → {部件名, 字节数}。
+ * 关系类型是 …/oleObject，目标在 word/embeddings/ 下（二进制，只记大小不抽内容）。
+ */
+function docxOleObjects(
+  rels: string,
+  embeddings: Record<string, number>
+): Map<string, { name: string; size: number | null }> {
+  const map = new Map<string, { name: string; size: number | null }>()
+  for (const e of parseRelEntries(rels)) {
+    if (!e.type.endsWith('/oleObject')) continue
+    const part = resolveRelTarget('word', e.target)
+    map.set(e.id, { name: path.basename(part), size: embeddings[part] ?? null })
+  }
+  return map
+}
+
+/**
+ * 段落里的 OLE 嵌入对象 → 标记行（如 `[嵌入对象: Excel.Sheet.12 → oleObject1.bin (640 B)]`）。
+ * ProgID 来自正文里的 o:OLEObject 标签；r:id 查不到部件时只报 ProgID。
+ */
+function docxOleMarks(paragraph: string, ctx: DocxRenderCtx): string[] {
+  const out: string[] = []
+  for (const m of paragraph.matchAll(/<(?:[\w.-]+:)?OLEObject\b([^>]*?)\/?>/g)) {
+    const attrs = m[1] ?? ''
+    const progId = decodeXmlEntities(/\bProgID="([^"]*)"/.exec(attrs)?.[1] ?? '').trim()
+    const rid = /\br:id="([^"]*)"/.exec(attrs)?.[1] ?? ''
+    const obj = rid ? ctx.oleObjects.get(rid) : undefined
+    const head = [progId || 'OLE 对象', obj?.name ?? ''].filter(Boolean).join(' → ')
+    const size = obj?.size
+    out.push(`[嵌入对象: ${head}${size === null || size === undefined ? '' : ` (${size} B)`}]`)
+  }
+  return out
+}
+
+/** 段落末尾附加的修订 / 链接 / 批注（含回复）/ 域代码 / 嵌入对象 / 文本框标记（没有就返回空串） */
 function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
   const parts: string[] = docxRevisionMarks(paragraph)
   for (const target of docxHyperlinkTargets(paragraph, ctx.hyperlinks)) {
@@ -1068,6 +1133,9 @@ function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
     }
   }
   for (const mark of docxFieldMarks(paragraph)) parts.push(mark)
+  parts.push(...docxOleMarks(paragraph, ctx))
+  // 文本框（w:txbxContent / wps:txbx）：内容已经在正文里，只是丢了「这是文本框」这个标记
+  if (/<w:txbxContent\b|<wps:txbx\b/.test(paragraph)) parts.push('[文本框]')
   return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
 
@@ -1287,7 +1355,8 @@ function extractDocxText(parts: DocxParts): string {
     comments,
     commentThread: threads.thread,
     commentReplyIds: threads.replies,
-    graphics: docxGraphicMarkMap(parts.rels, parts.graphics)
+    graphics: docxGraphicMarkMap(parts.rels, parts.graphics),
+    oleObjects: docxOleObjects(parts.rels, parts.embeddings)
   }
   const footnotes = parseDocxNotes(parts.footnotes, 'footnote')
   const endnotes = parseDocxNotes(parts.endnotes, 'endnote')
@@ -1343,6 +1412,15 @@ function extractDocxText(parts: DocxParts): string {
     blocks.push(`[页脚] ${line}`)
   }
 
+  // 自定义 XML（customXml/itemN.xml）：文档自带的业务数据，原样给出来
+  for (const item of parts.customXml) {
+    if (!customXmlHasContent(item.xml)) continue
+    const body = item.xml.replace(/<\?xml[^>]*\?>/i, '').trim()
+    if (!body) continue
+    const shown = body.length > MAX_CUSTOM_XML_CHARS ? `${body.slice(0, MAX_CUSTOM_XML_CHARS)}...` : body
+    blocks.push(`[自定义XML] ${item.name}: ${shown}`)
+  }
+
   // 缩进哨兵在归一化之后还原成空格（归一化会把连续空格压成一个）
   return normalizeText(blocks.join('\n')).replace(/\u0000/g, ' ')
 }
@@ -1353,8 +1431,9 @@ function readZipEntries(filePath: string, match: (name: string) => boolean): Rec
   return unzipSync(data, { filter: (f) => match(f.name) && f.originalSize <= MAX_ENTRY_BYTES })
 }
 
-/** 解出 DOCX 要用的部件（正文 + 样式 + 编号 + 脚注尾注 + 页眉页脚 + 批注含回复，拒绝 zip 炸弹） */
+/** 解出 DOCX 要用的部件（正文 + 样式 + 编号 + 脚注尾注 + 页眉页脚 + 批注含回复 + 嵌入对象 + 自定义 XML，拒绝 zip 炸弹） */
 function readDocxParts(filePath: string): DocxParts {
+  let embeddingCount = 0
   const files = readZipEntries(
     filePath,
     (n) =>
@@ -1370,7 +1449,9 @@ function readDocxParts(filePath: string): DocxParts {
       DOCX_HEADER_RE.test(n) ||
       DOCX_FOOTER_RE.test(n) ||
       DOCX_CHART_RE.test(n) ||
-      DOCX_DIAGRAM_RE.test(n)
+      DOCX_DIAGRAM_RE.test(n) ||
+      DOCX_CUSTOM_XML_RE.test(n) ||
+      (DOCX_EMBEDDING_RE.test(n) ? embeddingCount++ < MAX_DOCX_EMBEDDINGS : false)
   )
   const entry = files[DOCX_ENTRY]
   if (!entry) throw new Error(`缺少 ${DOCX_ENTRY}，不是有效的 DOCX 文件`)
@@ -1381,6 +1462,16 @@ function readDocxParts(filePath: string): DocxParts {
   for (const n of names.filter((n) => DOCX_CHART_RE.test(n) || DOCX_DIAGRAM_RE.test(n))) {
     graphics[n] = dec(files[n])
   }
+  // OLE 嵌入对象：只要字节数（二进制不抽内容）
+  const embeddings: Record<string, number> = {}
+  for (const n of names.filter((n) => DOCX_EMBEDDING_RE.test(n))) {
+    embeddings[n] = files[n]?.length ?? 0
+  }
+  // 自定义 XML：部件名 + 原文
+  const customXml = names
+    .filter((n) => DOCX_CUSTOM_XML_RE.test(n))
+    .sort()
+    .map((n) => ({ name: path.basename(n), xml: dec(files[n]) }))
   return {
     document: dec(entry),
     styles: dec(files[DOCX_STYLES_ENTRY]),
@@ -1393,6 +1484,8 @@ function readDocxParts(filePath: string): DocxParts {
     comments: dec(files[DOCX_COMMENTS_ENTRY]),
     commentsExtended: dec(files[DOCX_COMMENTS_EXTENDED_ENTRY]),
     graphics,
+    embeddings,
+    customXml,
     coreProps: dec(files[DOC_CORE_PROPS_ENTRY]),
     appProps: dec(files[DOC_APP_PROPS_ENTRY]),
     customProps: dec(files[DOC_CUSTOM_PROPS_ENTRY])
@@ -1473,6 +1566,49 @@ interface ChartInfo {
   categories: string[]
   /** 各系列的数据 */
   seriesData: ChartSeriesData[]
+  /** 有没有数据标签部件（c:dLbls） */
+  hasDataLabels: boolean
+  /** 数据标签开了哪几项（数值 / 类别名 / 系列名 …） */
+  dataLabels: string[]
+  /** 有没有图例部件（c:legend） */
+  hasLegend: boolean
+  /** 图例位置（b/t/l/r/tr；空串 = 位置没写） */
+  legendPos: string
+}
+
+/** 图表数据标签的开关项（XML 标签 → 中文说法） */
+const CHART_LABEL_FLAGS: Array<[string, string]> = [
+  ['showVal', '数值'],
+  ['showCatName', '类别名'],
+  ['showSerName', '系列名'],
+  ['showPercent', '百分比'],
+  ['showLegendKey', '图例项'],
+  ['showBubbleSize', '大小']
+]
+
+/** XML 开关元素（<c:showVal val="1"/>）→ 是不是打开 */
+function isXmlOn(open: string): boolean {
+  const v = /\bval="([^"]*)"/.exec(open)?.[1]
+  if (v === undefined) return true
+  return v !== '0' && v.toLowerCase() !== 'false'
+}
+
+/** 图例位置（c:legendPos）→ 中文说法 */
+function chartLegendPosLabel(pos: string): string {
+  switch (pos) {
+    case 'b':
+      return '底部'
+    case 't':
+      return '顶部'
+    case 'l':
+      return '左侧'
+    case 'r':
+      return '右侧'
+    case 'tr':
+      return '右上'
+    default:
+      return '有'
+  }
 }
 
 /**
@@ -1495,7 +1631,11 @@ function parseChartInfo(
     catAxisTitle: '',
     valAxisTitle: '',
     categories: [],
-    seriesData: []
+    seriesData: [],
+    hasDataLabels: false,
+    dataLabels: [],
+    hasLegend: false,
+    legendPos: ''
   }
   if (!xml) return info
   const chartEl = xmlElements(xml, 'chart')[0]
@@ -1568,6 +1708,27 @@ function parseChartInfo(
       if (t) info.valAxisTitle = titleText(t.body)
     }
   }
+  // 数据标签（c:dLbls）：图表类型级（c:barChart 里）或系列级都认；<c:delete val="1"/> 表示删掉了
+  for (const d of xmlElements(body, 'dLbls')) {
+    if (xmlElements(d.body, 'delete').length > 0) continue
+    info.hasDataLabels = true
+    const flags: string[] = []
+    for (const [tag, label] of CHART_LABEL_FLAGS) {
+      const el = xmlElements(d.body, tag)[0]
+      if (el && isXmlOn(el.open)) flags.push(label)
+    }
+    if (flags.length > 0) {
+      info.dataLabels = flags
+      break
+    }
+  }
+  // 图例（c:legend）：只有开关信息，位置写在 c:legendPos
+  const legend = xmlElements(body, 'legend')[0]
+  if (legend && xmlElements(legend.body, 'delete').length === 0) {
+    info.hasLegend = true
+    const pos = xmlElements(legend.body, 'legendPos')[0]
+    info.legendPos = (/\bval="([^"]*)"/.exec(pos?.open ?? '')?.[1] ?? '').toLowerCase()
+  }
   for (const ser of xmlElements(body, 'ser')) {
     const tx = xmlElements(ser.body, 'tx')[0]
     let name = ''
@@ -1609,6 +1770,14 @@ function chartMarkerLines(
   if (info.catAxisTitle) axes.push(`类别轴: ${info.catAxisTitle}`)
   if (info.valAxisTitle) axes.push(`数值轴: ${info.valAxisTitle}`)
   if (axes.length > 0) lines.push(`[坐标轴] ${axes.join(' · ')}`)
+  // 数据标签 / 图例开关（图表部件里没有这两样就不出这行）
+  const switches: string[] = []
+  if (info.hasDataLabels) {
+    switches.push(`数据标签: ${info.dataLabels.length > 0 ? info.dataLabels.join('、') : '无'}`)
+  }
+  if (info.hasLegend) switches.push(`图例: ${chartLegendPosLabel(info.legendPos)}`)
+  else if (info.hasDataLabels) switches.push('图例: 无')
+  if (switches.length > 0) lines.push(`[图表标签] ${switches.join(' · ')}`)
   const cats = info.categories.slice(0, MAX_CHART_POINTS)
   info.seriesData.forEach((s, i) => {
     const values = s.values.slice(0, MAX_CHART_POINTS)
@@ -1732,6 +1901,8 @@ const XLSX_PERSONS_ENTRY = 'xl/persons/person.xml'
 const XLSX_EXT_LINK_RE = /^xl\/externalLinks\/externalLink\d*\.xml$/
 /** 外部链接部件的关系（目标文件路径在这里） */
 const XLSX_EXT_LINK_RELS_RE = /^xl\/externalLinks\/_rels\/externalLink\d*\.xml\.rels$/
+/** 外部链接缓存值最多显示几个单元格 */
+const MAX_EXT_LINK_CACHE = 20
 
 /** 解码 zip 条目为 UTF-8 文本 */
 function decodeEntry(entry: Uint8Array | undefined): string {
@@ -1825,6 +1996,10 @@ const PPTX_AUTHORS_RE = /^ppt\/(?:[^/]*[Aa]uthor[^/]*\.xml|[Aa]uthors\/[^/]+\.xm
 const PPTX_CHART_RE = /^ppt\/charts\/chart\d*\.xml$/
 /** SmartArt 数据部件（ppt/diagrams/dataN.xml） */
 const PPTX_DIAGRAM_RE = /^ppt\/diagrams\/data\d*\.xml$/
+/** 母版部件（ppt/slideMasters/slideMasterN.xml） */
+const PPTX_MASTER_RE = /^ppt\/slideMasters\/slideMaster\d+\.xml$/
+/** 版式部件（ppt/slideLayouts/slideLayoutN.xml） */
+const PPTX_LAYOUT_RE = /^ppt\/slideLayouts\/slideLayout\d+\.xml$/
 
 /** 只是占位的形状类型：页码 / 日期 / 页眉页脚（抽出来是噪音，不是内容） */
 const PPTX_SKIP_PLACEHOLDERS = new Set(['sldNum', 'dt', 'hdrFtr', 'ftr'])
@@ -1834,6 +2009,10 @@ interface PptxParts {
   presentation: string
   presentationRels: string
   slides: Array<{ name: string; xml: string; rels: string }>
+  /** 母版部件（版式名来自 p:cSld@name） */
+  masters: Array<{ name: string; xml: string }>
+  /** 版式部件 */
+  layouts: Array<{ name: string; xml: string }>
   notes: Record<string, string>
   /** 批注部件：zip 内路径 → xml */
   comments: Record<string, string>
@@ -2112,6 +2291,46 @@ function pptxNotesText(notesXml: string): string {
 }
 
 /**
+ * 母版 / 版式里的文字：用户在模板里写的内容（页脚口号、公司名等）。
+ * 只取形状正文；页码 / 日期 / 页眉页脚占位跳过，PowerPoint 的提示语也过滤掉。
+ */
+function pptxTemplateText(xml: string): string {
+  const texts: string[] = []
+  for (const sp of xmlChildElements(pptxSpTreeBody(xml), PPTX_CONTAINER_TAGS, ['p:sp'])) {
+    if (PPTX_SKIP_PLACEHOLDERS.has(pptxPlaceholderType(sp.body))) continue
+    for (const line of pptxShapeLines(sp.body)) {
+      const t = line.trim()
+      if (!t || pptxTemplateNoise(t)) continue
+      if (!texts.includes(t)) texts.push(t)
+    }
+  }
+  return texts.join(' · ')
+}
+
+/** 模板提示语 / 占位噪音：不是用户写的内容 */
+function pptxTemplateNoise(text: string): boolean {
+  if (/^click to edit master/i.test(text)) return true
+  if (/^(second|third|fourth|fifth) level$/i.test(text)) return true
+  if (/^[‹#›#]+$/.test(text)) return true
+  if (/^\d{1,4}\/\d{1,2}\/\d{1,4}$/.test(text)) return true
+  return false
+}
+
+/** 母版 / 版式文字 → 标记行（模板信息排在幻灯片之前） */
+function pptxTemplateLines(parts: PptxParts): string[] {
+  const out: string[] = []
+  parts.masters.forEach((m, i) => {
+    const text = pptxTemplateText(m.xml)
+    if (text) out.push(`[母版${i > 0 ? ` ${i + 1}` : ''}] ${text}`)
+  })
+  parts.layouts.forEach((l) => {
+    const text = pptxTemplateText(l.xml)
+    if (text) out.push(`[版式: ${l.name || '未命名'}] ${text}`)
+  })
+  return out
+}
+
+/**
  * 一页 spTree 里的内容块：形状文字 / 表格 / 图片 alt，按形状在页面里的先后顺序。
  * 形状级链接与该形状的批注挂在它的首个块末尾（表格不挂，会破坏 Markdown 表）。
  */
@@ -2202,6 +2421,8 @@ function readPptxParts(filePath: string): PptxParts {
       PPTX_AUTHORS_RE.test(n) ||
       PPTX_CHART_RE.test(n) ||
       PPTX_DIAGRAM_RE.test(n) ||
+      PPTX_MASTER_RE.test(n) ||
+      PPTX_LAYOUT_RE.test(n) ||
       n === DOC_CORE_PROPS_ENTRY || n === DOC_APP_PROPS_ENTRY || n === DOC_CUSTOM_PROPS_ENTRY
   )
   const dec = (u: Uint8Array | undefined): string =>
@@ -2226,10 +2447,24 @@ function readPptxParts(filePath: string): PptxParts {
       xml: dec(files[name]),
       rels: dec(files[`ppt/slides/_rels/${path.basename(name)}.rels`])
     }))
+  // 母版 / 版式：名字取 p:cSld@name（版式名如「标题幻灯片」）
+  const templateName = (xml: string): string =>
+    decodeXmlEntities(/<p:cSld\b[^>]*\bname="([^"]*)"/.exec(xml)?.[1] ?? '').trim()
+  const templateNo = (n: string): number => Number(/(\d+)\.xml$/.exec(n)?.[1] ?? 0)
+  const masters = names
+    .filter((n) => PPTX_MASTER_RE.test(n))
+    .sort((a, b) => templateNo(a) - templateNo(b))
+    .map((n) => ({ name: templateName(dec(files[n])), xml: dec(files[n]) }))
+  const layouts = names
+    .filter((n) => PPTX_LAYOUT_RE.test(n))
+    .sort((a, b) => templateNo(a) - templateNo(b))
+    .map((n) => ({ name: templateName(dec(files[n])), xml: dec(files[n]) }))
   return {
     presentation: dec(files[PPTX_PRESENTATION_ENTRY]),
     presentationRels: dec(files[PPTX_PRESENTATION_RELS]),
     slides,
+    masters,
+    layouts,
     notes,
     comments,
     authors,
@@ -2320,6 +2555,8 @@ export function extractPptxText(filePath: string): string {
   const parts = readPptxParts(filePath)
   const meta = docPropsLines(parts.coreProps, parts.appProps, parts.customProps).join('\n')
   const blocks: string[] = []
+  // 母版 / 版式里的文字（模板信息排前面）
+  blocks.push(...pptxTemplateLines(parts))
   pptxSlideOrder(parts).forEach((slide, i) => {
     const ctx = pptxRenderCtx(parts, slide)
     const lines = [`[幻灯片 ${i + 1}]`, ...pptxSlideBlocks(slide.xml, ctx)]
@@ -4376,9 +4613,27 @@ function parseXlsxExternalLinks(
       }
     }
     if (!path) continue
-    items.push(`[${idx}]${sheetNames.length > 0 ? ` ${sheetNames.join(', ')}` : ''} → ${path}`)
+    const cached = xlsxExtLinkCached(xml)
+    items.push(
+      `[${idx}]${sheetNames.length > 0 ? ` ${sheetNames.join(', ')}` : ''} → ${path}${cached ? ` (缓存值: ${cached})` : ''}`
+    )
   }
   return items.length > 0 ? `[外部链接] ${items.join(' · ')}` : ''
+}
+
+/** 外部链接部件里缓存下来的值（externalBook/sheetDataSet）：`A1=100, B1=200` */
+function xlsxExtLinkCached(xml: string): string {
+  const ds = xmlElements(xml, 'sheetDataSet')[0]
+  if (!ds) return ''
+  const items: string[] = []
+  for (const cell of xmlElements(ds.body, 'cell')) {
+    const ref = /\br="([^"]*)"/.exec(cell.open)?.[1] ?? ''
+    const v = firstXmlText(xmlElements(cell.body, 'v'))
+    if (!ref || !v) continue
+    items.push(`${ref}=${v}`)
+    if (items.length >= MAX_EXT_LINK_CACHE) break
+  }
+  return items.join(', ')
 }
 
 export function extractXlsxText(filePath: string): string {
@@ -4770,6 +5025,64 @@ async function pdfAnnotationMarks(doc: PdfDocument, annots: PdfAnnotation[]): Pr
   return out.length > 0 ? ` ${out.join(' ')}` : ''
 }
 
+/** 最多显示几个 PDF 内嵌附件 */
+const MAX_PDF_ATTACHMENTS = 20
+/** 内嵌附件正文最多显示多少字符（超了只给头部） */
+const MAX_ATTACHMENT_CHARS = 2000
+
+/**
+ * PDF 内嵌附件（catalog 的 /Names /EmbeddedFiles）→ 标记行。
+ * 附件名 + 字节数；内容是 UTF-8 文本时顺手给一段正文（二进制不给，免得刷屏）。
+ * 没有 getAttachments 的实现 / 读失败 → 不出标记。
+ */
+async function pdfAttachmentLines(doc: PdfDocument): Promise<string[]> {
+  if (typeof doc.getAttachments !== 'function') return []
+  let atts: Map<string, { filename?: string; rawFilename?: string; description?: string }> | null = null
+  try {
+    atts = await doc.getAttachments()
+  } catch {
+    return []
+  }
+  if (!atts) return []
+  const out: string[] = []
+  for (const [key, item] of atts) {
+    if (out.length >= MAX_PDF_ATTACHMENTS) break
+    const name = item?.filename || key
+    // 内容是按需拉的（getAttachments 只给元信息），拉不到就只报名字
+    let content: Uint8Array | null = null
+    if (typeof doc.getAttachmentContent === 'function') {
+      try {
+        content = await doc.getAttachmentContent(key)
+      } catch {
+        content = null
+      }
+    }
+    const size = content?.length ?? 0
+    const text = attachmentText(content ?? undefined)
+    const desc = (item?.description ?? '').trim()
+    out.push(
+      `[附件] ${name} (${size} B)${desc ? ` · 说明: ${desc}` : ''}${text ? `: ${text}` : ''}`
+    )
+  }
+  return out
+}
+
+/** 附件字节 → 可读文本（不是 UTF-8 文本 / 太大 / 含 NUL → 返回空串） */
+function attachmentText(content: Uint8Array | undefined): string {
+  if (!content || content.length === 0) return ''
+  if (content.length > MAX_ATTACHMENT_CHARS * 4) return ''
+  let decoded = ''
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(content)
+  } catch {
+    return ''
+  }
+  if (decoded.includes('\u0000')) return ''
+  const flat = decoded.replace(/\s+/g, ' ').trim()
+  if (!flat) return ''
+  return flat.length > MAX_ATTACHMENT_CHARS ? `${flat.slice(0, MAX_ATTACHMENT_CHARS)}...` : flat
+}
+
 export async function previewDocument(input: DocumentPreviewInput): Promise<DocumentPreview> {
   const resolved = resolveInputPath(input)
   const stat = fs.statSync(resolved)
@@ -4865,12 +5178,15 @@ export async function previewDocument(input: DocumentPreviewInput): Promise<Docu
     const lastExtracted = pages.length ? pages[pages.length - 1].page : start
     if (lastExtracted < total) truncated = true
     const outline = await readPdfOutline(doc)
+    // 内嵌附件（不可再生信息：正文里看不到，只能从附件里读）
+    const attachmentLines = await pdfAttachmentLines(doc)
     const body = pages.map((p) => p.text).join('\n\n')
+    const head = [infoLine, ...attachmentLines].filter(Boolean)
     return {
       ...base,
       pageCount: total,
       pages,
-      text: infoLine ? `${infoLine}\n${body}` : body,
+      text: head.length > 0 ? `${head.join('\n')}\n${body}` : body,
       truncated,
       error: null,
       pageStart: start,
