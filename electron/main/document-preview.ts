@@ -810,8 +810,8 @@ interface DocxRenderCtx {
   commentThread: Map<string, string[]>
   /** 作为回复存在的批注 id（跟根批注一起输出，不单独再出） */
   commentReplyIds: Set<string>
-  /** r:id → 图表 / SmartArt 标记（如 `[图表: …]`） */
-  graphics: Map<string, string>
+  /** r:id → 图表 / SmartArt 标记行（如 `[图表: …]`、`[图表系列] …`） */
+  graphics: Map<string, string[]>
 }
 
 /**
@@ -1015,7 +1015,6 @@ function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
       if (r) parts.push(`[回复(${r.author}): ${r.text}]`)
     }
   }
-  parts.push(...graphicRefMarks(paragraph, ctx.graphics))
   return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
 
@@ -1023,18 +1022,18 @@ function docxExtras(paragraph: string, ctx: DocxRenderCtx): string {
  * 正文 rels → 关系 id → 图表 / SmartArt 标记。
  * 图表的关系类型是 …/chart，SmartArt 数据部件是 …/diagramData。
  */
-function docxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string> {
-  const map = new Map<string, string>()
+function docxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string[]> {
+  const map = new Map<string, string[]>()
   for (const e of parseRelEntries(relsXml)) {
     if (isExternalTarget(e.target)) continue
     const xml = graphics[resolveRelTarget('word', e.target)]
     if (!xml) continue
     if (e.type.endsWith('/chart')) {
-      const mark = chartMarker(xml)
-      if (mark) map.set(e.id, mark)
+      const marks = chartMarkerLines(xml)
+      if (marks.length > 0) map.set(e.id, marks)
     } else if (e.type.endsWith('/diagramData')) {
       const mark = smartArtMarker(xml)
-      if (mark) map.set(e.id, mark)
+      if (mark) map.set(e.id, [mark])
     }
   }
   return map
@@ -1044,17 +1043,17 @@ function docxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): 
  * XML 片段里的图形引用 → 图表 / SmartArt 标记（DOCX 段落 / PPTX graphicFrame 共用）。
  * 图表是 `<c:chart r:id="…"/>`，SmartArt 是 `<dgm:relIds r:dm="…"/>`（数据部件的关系 id）。
  */
-function graphicRefMarks(xml: string, graphics: Map<string, string>): string[] {
+function graphicRefMarks(xml: string, graphics: Map<string, string[]>): string[] {
   const out: string[] = []
   for (const m of xml.matchAll(/<(?:[\w.-]+:)?chart\b([^>]*)/g)) {
     const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
-    const mark = rid ? graphics.get(rid) : undefined
-    if (mark) out.push(mark)
+    const marks = rid ? graphics.get(rid) : undefined
+    if (marks) out.push(...marks)
   }
   for (const m of xml.matchAll(/<(?:[\w.-]+:)?relIds\b([^>]*)/g)) {
     const rid = /\br:dm="([^"]*)"/.exec(m[1] ?? '')?.[1]
-    const mark = rid ? graphics.get(rid) : undefined
-    if (mark) out.push(mark)
+    const marks = rid ? graphics.get(rid) : undefined
+    if (marks) out.push(...marks)
   }
   return out
 }
@@ -1152,6 +1151,9 @@ function docxCellText(cell: XmlElement, ctx: DocxRenderCtx): string {
     if (child.tag === 'w:p') {
       const t = renderDocxParagraph(child.body, ctx, false)
       if (t) own.push(t)
+      // 单元格里的图表 / SmartArt：并进同一格，不破坏管道表结构
+      const marks = graphicRefMarks(child.body, ctx.graphics)
+      if (marks.length > 0) own.push(marks.join(' '))
     } else {
       flush()
       for (const row of docxChildElements(child.body, ['w:tr'])) {
@@ -1259,6 +1261,8 @@ function extractDocxText(parts: DocxParts): string {
     } else {
       const text = renderDocxParagraph(block.body, ctx, true)
       if (text) blocks.push(text)
+      // 图表 / SmartArt：多行标记单独成块，排在所在段落之后
+      blocks.push(...graphicRefMarks(block.body, ctx.graphics))
     }
   }
 
@@ -1399,9 +1403,23 @@ function firstXmlText(els: XmlElement[]): string {
 }
 
 /** 图表信息：标题 + 系列名 */
+interface ChartSeriesData {
+  /** 系列名 */
+  name: string
+  /** 数值（与 ChartInfo.categories 对齐；没有类别时就是一串值） */
+  values: string[]
+}
+
 interface ChartInfo {
   title: string
-  series: string[]
+  /** 类别轴（横轴）标题 */
+  catAxisTitle: string
+  /** 数值轴（纵轴）标题 */
+  valAxisTitle: string
+  /** 类别（多系列时取第一个有类别的系列的） */
+  categories: string[]
+  /** 各系列的数据 */
+  seriesData: ChartSeriesData[]
 }
 
 /**
@@ -1414,8 +1432,19 @@ interface ChartInfo {
  * resolveFormula 是兜底：strRef 没写缓存值时（openpyxl 就不写 strCache），
  * 按 c:f 里的单元格公式回查原表。DOCX/PPTX 的图表没有单元格上下文，不传。
  */
-function parseChartInfo(xml: string, resolveFormula?: (formula: string) => string): ChartInfo {
-  if (!xml) return { title: '', series: [] }
+function parseChartInfo(
+  xml: string,
+  resolveFormula?: (formula: string) => string,
+  resolveRange?: (formula: string) => string[]
+): ChartInfo {
+  const info: ChartInfo = {
+    title: '',
+    catAxisTitle: '',
+    valAxisTitle: '',
+    categories: [],
+    seriesData: []
+  }
+  if (!xml) return info
   const chartEl = xmlElements(xml, 'chart')[0]
   const body = chartEl ? chartEl.body : xml
   const plotIdx = /<(?:[\w.-]+:)?plotArea\b/.exec(body)?.index ?? -1
@@ -1428,44 +1457,117 @@ function parseChartInfo(xml: string, resolveFormula?: (formula: string) => strin
     const formula = firstXmlText(xmlElements(refBody, 'f'))
     return formula ? resolveFormula(formula).trim() : ''
   }
-  let title = ''
-  for (const t of xmlElements(head, 'title')) {
-    const rich = xmlElements(t.body, 'rich')[0]
+  // 缓存里的数据点：c:pt 按 idx 排序（c:ptCount 只是声明数量）
+  const cachePoints = (cacheBody: string): string[] => {
+    const pts = xmlElements(cacheBody, 'pt')
+    if (pts.length === 0) return []
+    const indexed = pts.map((p) => ({
+      idx: Number(/\bidx="(\d+)"/.exec(p.open)?.[1] ?? '0') || 0,
+      v: firstXmlText(xmlElements(p.body, 'v')).trim()
+    }))
+    indexed.sort((a, b) => a.idx - b.idx)
+    return indexed.map((p) => p.v)
+  }
+  // 一个引用（c:cat / c:val 里的 strRef 或 numRef）→ 数据点：缓存优先，公式回查兜底
+  const refPoints = (containerBody: string): string[] => {
+    const ref = xmlElements(containerBody, 'strRef')[0] ?? xmlElements(containerBody, 'numRef')[0]
+    if (!ref) return []
+    const cache = xmlElements(ref.body, 'numCache')[0] ?? xmlElements(ref.body, 'strCache')[0]
+    if (cache) {
+      const pts = cachePoints(cache.body)
+      if (pts.length > 0) return pts
+    }
+    if (!resolveRange) return []
+    const formula = firstXmlText(xmlElements(ref.body, 'f')).trim()
+    return formula ? resolveRange(formula) : []
+  }
+  // 标题元素的文字：富文本（c:rich）或引用缓存（c:strRef）
+  const titleText = (titleBody: string): string => {
+    const rich = xmlElements(titleBody, 'rich')[0]
     if (rich) {
       const text = joinXmlTexts(rich.body).trim()
-      if (text) {
-        title = text
-        break
-      }
+      if (text) return text
     }
-    const ref = xmlElements(t.body, 'strRef')[0]
-    if (ref) {
-      const text = strRefText(ref.body)
-      if (text) {
-        title = text
-        break
-      }
+    const ref = xmlElements(titleBody, 'strRef')[0]
+    if (ref) return strRefText(ref.body)
+    return ''
+  }
+  let title = ''
+  for (const t of xmlElements(head, 'title')) {
+    const text = titleText(t.body)
+    if (text) {
+      title = text
+      break
     }
   }
-  const series: string[] = []
+  info.title = title
+  // 坐标轴标题：类别轴（c:catAx）与数值轴（c:valAx），都在 c:plotArea 里
+  const plotArea = xmlElements(body, 'plotArea')[0]
+  if (plotArea) {
+    const catAx = xmlElements(plotArea.body, 'catAx')[0]
+    const valAx = xmlElements(plotArea.body, 'valAx')[0]
+    if (catAx) {
+      const t = xmlElements(catAx.body, 'title')[0]
+      if (t) info.catAxisTitle = titleText(t.body)
+    }
+    if (valAx) {
+      const t = xmlElements(valAx.body, 'title')[0]
+      if (t) info.valAxisTitle = titleText(t.body)
+    }
+  }
   for (const ser of xmlElements(body, 'ser')) {
     const tx = xmlElements(ser.body, 'tx')[0]
-    if (!tx) continue
-    const ref = xmlElements(tx.body, 'strRef')[0]
-    let name = ref ? strRefText(ref.body) : ''
-    if (!name) name = firstXmlText(xmlElements(tx.body, 'v'))
-    if (name) series.push(name)
+    let name = ''
+    if (tx) {
+      const ref = xmlElements(tx.body, 'strRef')[0]
+      name = ref ? strRefText(ref.body) : ''
+      if (!name) name = firstXmlText(xmlElements(tx.body, 'v')).trim()
+    }
+    const catEl = xmlElements(ser.body, 'cat')[0]
+    const valEl = xmlElements(ser.body, 'val')[0]
+    const cats = catEl ? refPoints(catEl.body) : []
+    const values = valEl ? refPoints(valEl.body) : []
+    if (!name && cats.length === 0 && values.length === 0) continue
+    info.seriesData.push({ name, values })
+    if (cats.length > 0 && info.categories.length === 0) info.categories = cats
   }
-  return { title, series }
+  return info
 }
 
-/** 图表部件 → `[图表: 标题 · 系列1, 系列2]`（标题与系列都空则不出标记） */
-function chartMarker(xml: string, resolveFormula?: (formula: string) => string): string {
-  const info = parseChartInfo(xml, resolveFormula)
-  const bits: string[] = []
-  if (info.title) bits.push(info.title)
-  if (info.series.length > 0) bits.push(info.series.join(', '))
-  return bits.length > 0 ? `[图表: ${bits.join(' · ')}]` : ''
+/** 图表里数据点的展示上限（超出截断，防大图刷爆上下文） */
+const MAX_CHART_POINTS = 12
+
+/**
+ * 图表部件 → 多行标记：
+ *   [图表: 标题]
+ *   [坐标轴] 类别轴: X · 数值轴: Y
+ *   [图表系列] 系列名: 类别=数值, 类别=数值
+ * 标题与系列都空则不出标记。
+ */
+function chartMarkerLines(
+  xml: string,
+  resolveFormula?: (formula: string) => string,
+  resolveRange?: (formula: string) => string[]
+): string[] {
+  const info = parseChartInfo(xml, resolveFormula, resolveRange)
+  if (!info.title && info.seriesData.length === 0) return []
+  const lines: string[] = [info.title ? `[图表: ${info.title}]` : '[图表]']
+  const axes: string[] = []
+  if (info.catAxisTitle) axes.push(`类别轴: ${info.catAxisTitle}`)
+  if (info.valAxisTitle) axes.push(`数值轴: ${info.valAxisTitle}`)
+  if (axes.length > 0) lines.push(`[坐标轴] ${axes.join(' · ')}`)
+  const cats = info.categories.slice(0, MAX_CHART_POINTS)
+  info.seriesData.forEach((s, i) => {
+    const values = s.values.slice(0, MAX_CHART_POINTS)
+    const body = values.map((v, k) => {
+      const cat = cats[k]
+      return cat ? `${cat}=${v}` : v
+    }).join(', ')
+    const tail = s.values.length > values.length ? ` …(共${s.values.length}点)` : ''
+    const label = s.name || `系列${i + 1}`
+    lines.push(body ? `[图表系列] ${label}: ${body}${tail}` : `[图表系列] ${label}`)
+  })
+  return lines
 }
 
 /**
@@ -1479,6 +1581,42 @@ function parseChartFormula(formula: string): { sheet: string; ref: string } | nu
   const plain = /^([^!]+)!\$?([A-Z]+)\$?(\d+)$/.exec(t)
   if (plain) return { sheet: plain[1].trim(), ref: `${plain[2]}${plain[3]}` }
   return null
+}
+
+/** 图表里的区间公式（`'数据'!$A$2:$A$4`）→ 工作表名 + 起止单元格 */
+function parseChartRange(formula: string): { sheet: string; start: string; end: string } | null {
+  const t = formula.trim()
+  const quoted = /^'((?:[^']|'')+)'!\$?([A-Z]+\$?\d+)(?::\$?([A-Z]+\$?\d+))?$/.exec(t)
+  if (quoted) {
+    return {
+      sheet: quoted[1].replace(/''/g, "'"),
+      start: quoted[2],
+      end: quoted[3] ?? quoted[2]
+    }
+  }
+  const plain = /^([^!]+)!\$?([A-Z]+\$?\d+)(?::\$?([A-Z]+\$?\d+))?$/.exec(t)
+  if (plain) return { sheet: plain[1].trim(), start: plain[2], end: plain[3] ?? plain[2] }
+  return null
+}
+
+/** 图表区间回查时最多展开多少格（防畸形范围撑爆） */
+const MAX_CHART_RANGE_CELLS = 200
+
+/** 单元格区间 → 逐格引用（按行优先） */
+function expandCellRange(start: string, end: string): string[] {
+  const a = parseCellPosition(start)
+  const b = parseCellPosition(end)
+  if (!a || !b) return []
+  const c0 = Math.min(a.col, b.col)
+  const c1 = Math.max(a.col, b.col)
+  const r0 = Math.min(a.row, b.row)
+  const r1 = Math.max(a.row, b.row)
+  if ((c1 - c0 + 1) * (r1 - r0 + 1) > MAX_CHART_RANGE_CELLS) return []
+  const out: string[] = []
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) out.push(`${colLetters(c)}${r}`)
+  }
+  return out
 }
 
 /**
@@ -1702,8 +1840,8 @@ interface PptxRenderCtx {
   used: Set<string>
   /** 没有归属形状 id 的批注 → 该页末尾 */
   loose: PptxComment[]
-  /** r:id → 图表 / SmartArt 标记 */
-  graphics: Map<string, string>
+  /** r:id → 图表 / SmartArt 标记行 */
+  graphics: Map<string, string[]>
 }
 
 /** slide rels 里的外部超链接：rId → URL（内部跳转 / 内部部件不进） */
@@ -2098,18 +2236,18 @@ function pptxRenderCtx(parts: PptxParts, slide: PptxParts['slides'][number]): Pp
 }
 
 /** 幻灯片 rels → 关系 id → 图表 / SmartArt 标记 */
-function pptxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string> {
-  const map = new Map<string, string>()
+function pptxGraphicMarkMap(relsXml: string, graphics: Record<string, string>): Map<string, string[]> {
+  const map = new Map<string, string[]>()
   for (const e of parseRelEntries(relsXml)) {
     if (isExternalTarget(e.target)) continue
     const xml = graphics[resolveRelTarget('ppt/slides', e.target)]
     if (!xml) continue
     if (e.type.endsWith('/chart')) {
-      const mark = chartMarker(xml)
-      if (mark) map.set(e.id, mark)
+      const marks = chartMarkerLines(xml)
+      if (marks.length > 0) map.set(e.id, marks)
     } else if (e.type.endsWith('/diagramData')) {
       const mark = smartArtMarker(xml)
-      if (mark) map.set(e.id, mark)
+      if (mark) map.set(e.id, [mark])
     }
   }
   return map
@@ -4101,7 +4239,8 @@ function xlsxSheetGraphics(
   sheetXml: string,
   relEntries: RelEntry[],
   entries: Record<string, Uint8Array>,
-  resolveFormula?: (formula: string) => string
+  resolveFormula?: (formula: string) => string,
+  resolveRange?: (formula: string) => string[]
 ): string[] {
   const out: string[] = []
   const rels = new Map(relEntries.map((e) => [e.id, e.target]))
@@ -4115,11 +4254,12 @@ function xlsxSheetGraphics(
       const rid = /\br:id="([^"]*)"/.exec(m[1] ?? '')?.[1]
       const target = rid ? drawingRels.get(rid) : undefined
       if (!target || isExternalTarget(target)) continue
-      const mark = chartMarker(
+      const marks = chartMarkerLines(
         decodeEntry(entries[resolveRelTarget('xl/drawings', target)]) ?? '',
-        resolveFormula
+        resolveFormula,
+        resolveRange
       )
-      if (mark) out.push(mark)
+      if (marks.length > 0) out.push(...marks)
     }
   }
   for (const m of sheetXml.matchAll(/<(?:[\w.-]+:)?pivotTablePart\b([^>]*)/g)) {
@@ -4160,7 +4300,7 @@ export function extractXlsxText(filePath: string): string {
   const styles = parseXlsxStyles(decodeEntry(entries[XLSX_STYLES_ENTRY]))
   const date1904 = /<workbookPr[^>]*\bdate1904="(?:1|true)"/i.test(workbook)
 
-  const sheets: Array<{ name: string; path: string }> = []
+  const sheets: Array<{ name: string; path: string; state: string }> = []
   for (const m of workbook.matchAll(/<sheet\s[^>]*\/>/g)) {
     const tag = m[0]
     const name = /\bname="([^"]*)"/.exec(tag)?.[1] ?? ''
@@ -4169,12 +4309,14 @@ export function extractXlsxText(filePath: string): string {
     if (!target) continue
     const sheetPath = resolveRelTarget('xl', target)
     if (!XLSX_SHEET_RE.test(sheetPath)) continue
-    sheets.push({ name: decodeXmlEntities(name), path: sheetPath })
+    // 工作表可见性：hidden / veryHidden（不写 state 就是 visible）
+    const state = /\bstate="([^"]*)"/.exec(tag)?.[1] ?? ''
+    sheets.push({ name: decodeXmlEntities(name), path: sheetPath, state })
   }
   // 兜底：workbook.xml 读不出表清单 → 直接按 worksheets 目录里的文件名排
   if (sheets.length === 0) {
     for (const name of Object.keys(entries).filter((n) => XLSX_SHEET_RE.test(n)).sort()) {
-      sheets.push({ name: name.replace(/^xl\/worksheets\//, '').replace(/\.xml$/, ''), path: name })
+      sheets.push({ name: name.replace(/^xl\/worksheets\//, '').replace(/\.xml$/, ''), path: name, state: '' })
     }
   }
   if (sheets.length === 0) throw new Error('没有找到工作表（xl/worksheets/*.xml）')
@@ -4190,6 +4332,7 @@ export function extractXlsxText(filePath: string): string {
   // 先把每个工作表解析完再出块：图表系列名可能要回查别的表的单元格（strRef 没缓存值时）
   interface PreparedSheet {
     name: string
+    state: string
     sheetXml: string
     relEntries: RelEntry[]
     rows: string[]
@@ -4240,6 +4383,7 @@ export function extractXlsxText(filePath: string): string {
     }
     prepared.push({
       name: sheet.name,
+      state: sheet.state,
       sheetXml,
       relEntries,
       rows,
@@ -4259,6 +4403,16 @@ export function extractXlsxText(filePath: string): string {
     if (!ref) return ''
     return cellIndex.get(`${ref.sheet}!${ref.ref}`) ?? ''
   }
+  // 图表的类别 / 数值：缓存缺失时按 `表名!A2:A4` 区间回查原表
+  const resolveChartRange = (formula: string): string[] => {
+    const parsed = parseChartRange(formula)
+    if (!parsed) return []
+    const out: string[] = []
+    for (const ref of expandCellRange(parsed.start, parsed.end)) {
+      out.push(cellIndex.get(`${parsed.sheet}!${ref}`) ?? '')
+    }
+    return out
+  }
   for (const p of prepared) {
     if (p.rows.length === 0) continue
     const tail = p.dvLine ? `\n${p.dvLine}` : ''
@@ -4267,10 +4421,12 @@ export function extractXlsxText(filePath: string): string {
       p.sheetXml,
       p.relEntries,
       entries,
-      resolveChartFormula
+      resolveChartFormula,
+      resolveChartRange
     )
     const graphicTail = graphicLines.length > 0 ? `\n${graphicLines.join('\n')}` : ''
-    blocks.push(`[工作表 ${p.name}]\n${p.tableLine}${p.rows.join('\n')}${tail}${graphicTail}`)
+    const stateMark = p.state === 'hidden' ? '(隐藏)' : p.state === 'veryHidden' ? '(veryHidden)' : ''
+    blocks.push(`[工作表 ${p.name}${stateMark}]\n${p.tableLine}${p.rows.join('\n')}${tail}${graphicTail}`)
   }
   const body = normalizeText(blocks.join('\n\n'))
   const top = [meta, definedLine].filter((s) => s !== '').join('\n')
