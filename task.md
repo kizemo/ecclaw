@@ -338,6 +338,7 @@
 > 全量回归 `run78-*`（唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与 phase4t 无关）。
 > 交接见 `handoff-ecclaw-phase4t-final-2026-11-07.md`。
 
+> **第四十七阶段（DOCX 域代码 + XLSX 公式范围 / 外部链接）已完成并真机验证（自测 **20/20** + e2e **17/17**；全量回归 **run80** 三十四套，唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与本阶段无关）**：交接见 `handoff-ecclaw-phase4v-final-2026-11-07.md`。**
 > **第四十六阶段（图表深度：坐标轴标题 / 类别 / 数值 + XLSX 隐藏表标记）已完成并真机验证（`phase4u-e2e.cjs` **43/43** 全绿 + 自测 **27/27**）**：
 > 第四十五阶段的图表标记只有「标题 + 系列名」，**坐标轴标题与全部数值仍然看不到** →
 > 图表输出改多行块 `[图表: 标题]` / `[坐标轴] 类别轴: X · 数值轴: Y]` / `[图表系列] 名: 类别=数值, …`
@@ -783,6 +784,48 @@
 phase3u 的 A4 是**上一轮自己留下的 `current.json` 指针**（套件 E0 装了 1.1.0 不还原），
 把测试包 `ecclaw-graytest` 的指针复位到 1.0.0 后 24/24 —— 与 phase4u 无关）；
 唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。
+
+## 第四十七阶段（2026-11-07）：DOCX 域代码 + XLSX 公式范围 / 外部链接 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **选题（探针先行）**：`phase4v-make.py` 造四类夹具 + `phase4v-probe.cjs` 复验 phase4u handoff §6 候选。
+   判定：DOCX 域代码 = 真缺口（域指令 TOC/REF/SEQ/DATE/PAGE 全丢，结果文本在）；
+   XLSX 数组/共享公式 `ref=` 范围 = 真缺口；XLSX 外部链接目标路径 = 真缺口；
+   新轴扫描：DOCX 文本框 `w:txbxContent` **内容已随文本流抽出**（只丢位置标记）→ 低价值不做。
+2. **DOCX 域代码**：新增 `docxFieldMarks(paragraph)`（栈式配对 `fldChar begin/separate/end` + `instrText`，
+   支持嵌套；指令在 `separate` 处即出，无 `separate` 在 `end` 出；`fldSimple` 直接取 `w:instr`），
+   挂在 `docxExtras()` 尾部；`MAX_FIELD_INSTR = 80` 超长截断；
+   **HYPERLINK 域**取指令里第一个带引号段出 `[链接: URL]`，对齐 `w:hyperlink` 口径、不出 `[域:`。
+3. **XLSX 公式范围**：`Cell` 增加 `formulaKind`（`<f t>`）与 `formulaRef`（`<f ref>`）；
+   数组公式 → `[公式: …(数组→C1:C3)]`、共享 master → `[公式: …(共享→D1:D3)]`；
+   follower / 普通公式输出口径不变。
+4. **XLSX 外部链接**：新增 `XLSX_EXT_LINK_RE` / `XLSX_EXT_LINK_RELS_RE` 入 `readZipEntries` 过滤；
+   新增 `parseXlsxExternalLinks(workbook, rels, entries)`：`<externalReferences>` 次序 = `[N]` 编号，
+   workbook rels → 部件 → `sheetNames` + 部件 rels `externalLinkPath` Target；
+   输出 `[外部链接] [1] Sheet1 → 路径 · …` 置顶（与 `[定义名称]` 同区）。
+
+**第四十七阶段实证发现**：
+- **域指令在 `separate` 时就该出**：TOC 这类域的 `end` 落在后面段落，等 `end` 永远出不来；
+  且 Word 会把 instr 拆成多段 `instrText`，必须累加。
+- **HYPERLINK 域与 `w:hyperlink` 是两个来源同一个语义**，统一到 `[链接: ]` 口径 agent 才不用二次学习。
+- **`<f t="shared">` 的 `ref=` 只在 master 上**：follower 只有 `si`（维持旧回填口径）；
+  数组公式的 `ref=` 是溢出范围，两者语义都是「计算依据的范围」。
+- **外部链接 `[N]` 编号 = `<externalReferences>` 出现次序**，不是部件文件名字典序。
+- **夹具三坑连踩**：openpyxl `ArrayFormula` 文本必须带 `=` 前缀（少写吞首字符）；
+  手改 sheetData 必须把 `<c>` 放进所属 `<row>` 内（放 `</sheetData>` 前变孤儿节点、整格消失）；
+  rels 部件必须放 `xl/externalLinks/_rels/` 目录（扁平命名产品侧按标准找不到，fail-closed 正确）。
+- **探针复验第 12 次兑现价值**：phase4u §6 三候选全实锤；同批「DOCX 文本框」看似缺口实测已支持。
+
+**验证**：`phase4v-selftest.cjs` **20/20**（含负向：无域文档 / 无链接部件输出逐字不变）；
+`phase4u-selftest.cjs` **27/27** 不受影响；`phase4m-selftest.cjs` 因输出格式变更**改断言后 72/72**
+（`40 [公式: SUM(A1:A3)]`→`…(数组→A4:A6)`、`2 [公式: B1*2]`→`…(共享→A1:A3)`；未改产品）；
+`phase4v-e2e.cjs` **17/17**（真 Electron + MCP stdio；注意 host-server.mjs 实际在
+`<stateDir>/openclaw/.openclaw/mcp/host-server.mjs`，不在 `.openclaw/` 根下）；
+全量回归 `run80-*` **三十四套**：phase4v 17/17（该 e2e 日志行首为「PASS: 」非「[*] PASS」，
+harness 机器计数漏计）、phase4m 改两条旧格式断言后补跑 **50/50**、graytest `current.json`
+指针复位 1.0.0 后 phase3u 补跑 **24/24**（两者均脚本级修复、零产品改动）；
+唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。未跑真站 phase3s / phase3q（红线）。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 

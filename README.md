@@ -1772,6 +1772,28 @@ WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
 
 ---
 
+### 5.51 DOCX 域代码 + XLSX 公式范围 / 外部链接（第四十七阶段）
+
+补三条「计算依据」缺口：DOCX 域结果可见但**域指令不可见**；XLSX 数组 / 共享公式
+只出公式体、**溢出范围 `ref=` 丢失**；公式引用 `[1]Sheet1!…` 但**外部链接目标路径**不在。
+
+- **DOCX 域代码**：栈式配对 `<w:fldChar begin/separate/end>` + `<w:instrText>`，支持嵌套域；
+  域指令在 `separate` 处即出 `[域: TOC \o "1-3" \h \z \u]`（TOC 这类域的 `end` 落在后面段落，
+  等 `end` 永远出不来），无 `separate` 的域在 `end` 出；简单域 `<w:fldSimple w:instr>` 直接取指令；
+  **HYPERLINK 域对齐 `w:hyperlink` 口径**出 `[链接: URL]`（URL 取指令里第一个带引号段）；
+  指令折叠空白、超 80 字符截断加 `...`。
+- **XLSX 公式范围**：`<f t="array">` 标 `[公式: …(数组→C1:C3)]`、共享公式 master
+  `<f t="shared" ref>` 标 `[公式: …(共享→D1:D3)]`；follower 没有 `ref`、维持旧口径
+  `[公式: 共享 …]`；普通公式输出不变。
+- **XLSX 外部链接**：`workbook.xml` 的 `<externalReferences>` 按次序编号即公式里的
+  `[1] [2]…`；经 workbook rels 找部件，读部件内 `sheetNames` 与部件自己 rels 里
+  `externalLinkPath` 的 Target，置顶出
+  `[外部链接] [1] Sheet1 → https://…/budget.xlsx · [2] …`；部件或路径解析不出就跳过该条（不猜）。
+- **回归红线**：没有域 / 外部链接 / 数组与共享公式的文档输出逐字不变。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
+---
+
 ## 6. 技能与文件库
 
 - **技能**：`<stateDir>/skills`（托管）与 `<stateDir>/user-skills`（用户自建），
@@ -1963,7 +1985,11 @@ PPTX / XLSX 元数据行与正文紧邻不插空行；畸形 XML 不影响正文
 单图点数上限 12，超出截断并标 `...(共N点)`；
 DOCX 图表块独立成块排在所在段落之后；
 XLSX 隐藏工作表标 `[工作表 名(隐藏)]` / `[工作表 名(veryHidden)]`；
-没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.50）。
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.50）、
+**DOCX 域代码 + XLSX 公式范围 / 外部链接**（DOCX `fldChar`/`instrText`/`fldSimple` →
+`[域: 指令]`，HYPERLINK 域出 `[链接: URL]`；XLSX `<f t>`/`ref` →
+`[公式: …(数组→范围)]` / `(共享→范围)`；`<externalReferences>` →
+`[外部链接] [N] Sheet1 → 目标路径` 置顶；没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.51）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，

@@ -1,0 +1,1 @@
+新会话请通读 F:\soft\00selfmade\ecclaw\handoff-ecclaw-phase4v-final-2026-11-07.md 全文（§4 下一轮必交付含 run80 全量回归 + 本轮提交 + 第四十八阶段选题；§5 候选清单全部未做探针复验），按其执行；只改 F:\soft\00selfmade\ecclaw\electron\main\document-preview.ts——本 prompt 不重复 handoff 任何内容。
