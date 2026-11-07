@@ -338,6 +338,20 @@
 > 全量回归 `run78-*`（唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与 phase4t 无关）。
 > 交接见 `handoff-ecclaw-phase4t-final-2026-11-07.md`。
 
+> **第四十六阶段（图表深度：坐标轴标题 / 类别 / 数值 + XLSX 隐藏表标记）已完成并真机验证（`phase4u-e2e.cjs` **43/43** 全绿 + 自测 **27/27**）**：
+> 第四十五阶段的图表标记只有「标题 + 系列名」，**坐标轴标题与全部数值仍然看不到** →
+> 图表输出改多行块 `[图表: 标题]` / `[坐标轴] 类别轴: X · 数值轴: Y]` / `[图表系列] 名: 类别=数值, …`
+> （轴标题取 `c:plotArea` 里 `c:catAx` / `c:valAx` 的 `c:title`，与图表级 `c:title` 不混；
+> 数值**缓存优先 + 公式回查兜底** —— openpyxl 生成的图表只写 `c:f` 不写缓存，
+> 按区间回查原表补出类别与数值；单图点数上限 12，超出截断并标 `...(共N点)`）；
+> XLSX 的 **hidden / veryHidden 工作表**此前与普通表输出完全一样 → 表标题标
+> `[工作表 名(隐藏)]` / `[工作表 名(veryHidden)]`（内容照常输出 —— 隐藏表常是公式回查的源表，丢了会断取值链）；
+> DOCX 图表块改为**段落之后的独立块**（表格单元格里的图表并进同一格，不破坏管道表）。
+> 无这些部件的文档输出**逐字不变**（回归红线断言锁死）。只改 `document-preview.ts`，工具数仍 27。
+> 全量回归 `run79-*` 三十二套（首跑有 7 套因 8898 / 8897 fixture server 未启动而中断，
+> 补起两个 server 后 `run79b-*` / `run79c-*` 补跑全绿；唯一失败 phase3r C3 为事件库 >2000 条既有环境失败，与 phase4u 无关）。
+> 交接见 `handoff-ecclaw-phase4u-final-2026-11-07.md`。
+
 ## 第二十三阶段（2026-11-04）：PPTX / XLSX 抽取 ✅
 
 | # | 交付项 | 状态 | 证据 |
@@ -721,6 +735,54 @@
 **验证**：`phase4t-selftest.cjs` **26/26**（三格式图表 / 真结构与边界 / SmartArt / 透视表 /
 线程批注 / 负向逐字一致 / 坏部件容错）；`phase4t-e2e.cjs` **29/29**（`run78-phase4t.log`）；
 旧自测 4a~4s 全绿；全量回归 `run78-*` 三十一套，唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。
+
+## 第四十六阶段（2026-11-07）：图表深度（坐标轴标题 / 类别 / 数值）+ XLSX 隐藏表标记 ✅
+
+**改了什么**（只改 `electron/main/document-preview.ts`，MCP 工具数仍 27，无新增依赖）：
+
+1. **选题（探针先行）**：`phase4u-make.py` 复验 phase4t handoff §7 候选清单（**第 11 次过期**）+
+   `phase4u-fixtures.py` 造新夹具 + `phase4u-probe.cjs` 打印现状。
+   判定：图表轴标题 / 类别 / 数值 = 真缺口（最大）；XLSX 隐藏表 = 真缺口；
+   数组公式 / 外部链接 / DOCX 域代码 / `w:sdt` / OLE = 中低价值，本轮不做；
+   DOCX 页眉页脚**已支持**（无缺口）。
+2. **图表结构扩展**：`ChartInfo` → `{ title, catAxisTitle, valAxisTitle, categories, seriesData }`；
+   新增 `ChartSeriesData { name, values }`；`parseChartInfo()` 增加
+   `cachePoints`（`c:pt` 按 `idx` 排序）、`refPoints`（`c:cat` / `c:val` → strRef/numRef →
+   **numCache/strCache 优先**、缺则按 `c:f` 区间回查）、`titleText`（`c:rich` 与 `c:strRef` 两种写法）；
+   坐标轴标题取 `c:plotArea` 内的 `c:catAx` / `c:valAx`。
+3. **输出改多行**：`chartMarker()` 删除 → `chartMarkerLines()` 返回 `string[]`；
+   `MAX_CHART_POINTS = 12`（超限截断并标 `...(共N点)`），系列无名时用 `系列N`；
+   `DocxRenderCtx.graphics` / `PptxRenderCtx.graphics` 类型 `Map<string,string>` → `Map<string,string[]>`，
+   `graphicRefMarks()` 改摊平数组。
+4. **取值兜底**：XLSX 侧新增 `parseChartRange()` / `expandCellRange()` / `resolveChartRange()`
+   （`MAX_CHART_RANGE_CELLS = 200`），按 `'数据'!A2:A4` 回查原表补类别与数值。
+5. **落位**：DOCX 图表块从 `docxExtras`（行内）**移出**，改为在 `extractDocxText()` 中作为
+   **段落之后的独立块**；`docxCellText()` 里表格单元格中的图形并进同一格（不破坏管道表）。
+6. **隐藏表标记**：`extractXlsxText()` 读工作表 `sheet@state`，
+   `hidden` → `[工作表 名(隐藏)]`、`veryHidden` → `[工作表 名(veryHidden)]`。
+
+**第四十六阶段实证发现**：
+- **候选清单第 11 次过期**：phase4t §7 候选里「图表坐标轴标题 / 类别 / 数值」仍被列为待办，
+  实测是真缺口且是剩余图形轴里信息量最大的一条；
+  但同批的「DOCX 页眉页脚」**早已支持**（`[页眉] …`），照单去做就是白工。
+- **图表缓存两条路都得留**：Excel / PowerPoint 自己存的文件写 `numCache` / `strCache`（直接读）；
+  openpyxl 生成的图表**只有 `c:f` 公式**（必须回查原表）—— 只做一条，另一类文件直接瞎。
+- **标题算出来不赋回去会静默丢标题**：`parseChartInfo()` 里局部 `title` 未写回 `info.title` 时，
+  输出退化成 `[图表]`，不报错也不崩 —— 断言必须盯住「标题行」本身，不能只断言「有输出」。
+- **DOCX 图表块位置**：留在段落行内会与段落文字挤成一行、看不出图表挂在哪 →
+  改成段落之后的独立块；但表格单元格里的图表仍要并进同一格，否则管道表会被打断。
+- **隐藏表不能跳过**：隐藏表常是公式回查的源表（`veryHidden` 尤其），跳过会断掉图表取值链。
+- **NFKC 会把 `…` 变三个半角点**（`'\u2026'.normalize('NFKC') === '...'`），断言按半角写。
+
+**验证**：`phase4u-selftest.cjs` **27/27**（自带夹具：PPTX/DOCX 图表深度 / XLSX 公式回查 /
+隐藏表标记 / 边界（无标题、无轴标题、20 点截断、坏部件不崩）/ 负向（旧单行格式消失）/ SmartArt 不受影响）；
+`phase4u-e2e.cjs` **43/43**（`run79-phase4u.log`，含工具面 / 抽取 / 界面）；
+`phase4t-selftest.cjs` 因输出格式变更**改断言后 42/42**（改断言，未改产品）；
+全量回归 `run79-*` 三十二套（首跑有 7 套因 8898 / 8897 fixture server 未启动而中断 ——
+补起 `fixture-server.cjs`（8898）与 `fixture-writer.cjs`（8897）后 `run79b-*` / `run79c-*` 补跑全绿；
+phase3u 的 A4 是**上一轮自己留下的 `current.json` 指针**（套件 E0 装了 1.1.0 不还原），
+把测试包 `ecclaw-graytest` 的指针复位到 1.0.0 后 24/24 —— 与 phase4u 无关）；
+唯一失败 phase3r C3 为事件库 >2000 条既有环境失败。
 
 ## 第四十二阶段（2026-11-06）：docProps 扩展（app.xml + custom.xml） ✅
 

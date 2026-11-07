@@ -1730,7 +1730,8 @@ WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
 **数据透视表**看不到字段，PowerPoint 2019 之后的**现代线程批注**只被当成普通批注读了一半。
 
 - **图表（三格式）**：`word/charts/chartN.xml`（DOCX）、`ppt/charts/chartN.xml`（PPTX）、
-  `xl/charts/chartN.xml`（XLSX）→ `[图表: 月度销售趋势图 · 销售额系列]`；
+  `xl/charts/chartN.xml`（XLSX）→ `[图表: 月度销售趋势图 · 销售额系列]`
+  （第四十六阶段起改为多行块，见 §5.50）；
   标题只取**图表级**的 `c:title`（在 `c:plotArea` 之前那段，坐标轴标题不算），
   认 `c:tx/c:rich` 富文本与 `c:tx/c:strRef` 缓存值两种写法；
   系列名取 `c:ser/c:tx`（`strRef` 缓存值或字面量 `c:v`）；
@@ -1745,6 +1746,28 @@ WPS / LibreOffice 写在 `pic:cNvPr@descr` 的图片说明仍被丢掉。
   `2018/annotation` 的 `paraIdParent`）；多级回复**摊平挂根**批注，父批注找不到时按独立批注输出。
 - **落位**：DOCX 挂**图表所在段落**、PPTX 挂 **graphicFrame 所在位置**、XLSX 挂**所属工作表末尾**。
 - **回归红线**：没有这些部件的文档，输出与改动前**逐字一致**。
+- **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
+
+---
+
+### 5.50 图表深度（坐标轴标题 / 类别 / 数值）+ XLSX 隐藏表标记（第四十六阶段）
+
+把第四十五阶段的图表标记从「一行标题 + 系列名」加深到「能读出数据本身」，
+并给 XLSX 的隐藏工作表加上状态标记。
+
+- **图表输出改多行**：`[图表: 标题]` / `[坐标轴] 类别轴: X · 数值轴: Y` /
+  `[图表系列] 系列名: 类别=数值, 类别=数值`；标题与系列都空则不出标记，
+  只有系列没有标题时单独出一行 `[图表]`。
+- **坐标轴标题**：取 `c:plotArea` 里 `c:catAx` / `c:valAx` 的 `c:title`
+  （图表级 `c:title` 是图表标题，两者不混）；没有轴标题就不出 `[坐标轴]` 行。
+- **取值口径：缓存优先 + 公式回查兜底**：`c:cat` / `c:val` 优先读 `numCache` / `strCache`
+  （`c:pt` 按 `idx` 排序）；openpyxl 生成的图表**只写 `c:f` 公式、不写缓存**，
+  按 `'数据'!A2:A4` 区间回查原表单元格补出类别与数值（回查上限 200 格）。
+- **点数上限 12**：超限截断并标 `...(共N点)`，防大图刷爆上下文。
+- **DOCX 落位**：图表块从行内改为**段落之后的独立块**；表格单元格里的图表并进同一格文本。
+- **XLSX 隐藏表**：`workbook.xml` 的 `sheet@state` 为 `hidden` / `veryHidden` 时，
+  表标题标 `[工作表 名(隐藏)]` / `[工作表 名(veryHidden)]`（内容照常输出 ——
+  隐藏表常是公式回查的源表，丢了会断掉取值链）。
 - **范围**：只改 `electron/main/document-preview.ts`；工具数仍 27；无新增依赖。
 
 ---
@@ -1932,7 +1955,15 @@ PPTX / XLSX 元数据行与正文紧邻不插空行；畸形 XML 不影响正文
 `diagrams/dataN.xml` → `[SmartArt: 节点1, 节点2]`；`xl/pivotTables/*` → 表末
 `[透视表: 名称 · 字段: …]`；`ppt/comments/modernCommentN.xml` + `ppt/authors.xml` →
 `[批注(作者): …] [回复(作者): …]`（两代写法都认，多级回复摊平挂根）；
-没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.49）。
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.49）、
+**图表深度 + XLSX 隐藏表标记**（三格式 `chartN.xml` → 多行 `[图表: 标题]` /
+`[坐标轴] 类别轴: X · 数值轴: Y` / `[图表系列] 名: 类别=数值`；
+坐标轴标题取 `c:plotArea` 里 `c:catAx` / `c:valAx` 的 `c:title`；
+数值优先读 `numCache` / `strCache`，openpyxl 无缓存时按 `c:f` 区间回查原表；
+单图点数上限 12，超出截断并标 `...(共N点)`；
+DOCX 图表块独立成块排在所在段落之后；
+XLSX 隐藏工作表标 `[工作表 名(隐藏)]` / `[工作表 名(veryHidden)]`；
+没有这些部件的文档输出逐字不变；工具数仍 27，见 §5.50）。
 
 **真机实测（2026-11-02）**：四个 scope 各走一遍全部符合预期（once 每次都问 / session 重启即失效 /
 persistent 重启仍放行 / persistent-scroll 只放行滚动、点按仍问）；事件回放 12/12 断言通过，
